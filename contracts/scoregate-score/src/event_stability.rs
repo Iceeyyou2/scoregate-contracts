@@ -129,6 +129,7 @@ impl EventStabilityRegistry {
             "fr_set" => EventStability::OperatorDiagnostic, // Fee recipient set
             "fee_out" => EventStability::OperatorDiagnostic, // Fee withdrawn
             "wdl_lck" => EventStability::OperatorDiagnostic, // Withdrawal locked
+            "gqf_set" => EventStability::OperatorDiagnostic, // Gate query fee set
 
             // Oracle and staleness
             "orc_reg" => EventStability::OperatorDiagnostic, // Oracle registered

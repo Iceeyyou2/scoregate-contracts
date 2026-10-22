@@ -5112,6 +5112,12 @@ impl ScoreGateScoreContract {
     /// score exists. Never panics and never has side effects beyond a temporary
     /// flash-loan guard write.
     ///
+    /// This function is **infallible** (returns `bool`, never `Result`) and
+    /// **side-effect free** — it performs pure reads that do not extend TTL.
+    /// It does **not** charge the configured gate query fee.  Use
+    /// [`Self::query_risk_gate_paid`] when a per-query fee should be collected
+    /// and accumulated in `accumulated_fees`.
+    ///
     /// # Examples
     ///
     /// ```
@@ -5149,6 +5155,57 @@ impl ScoreGateScoreContract {
         Self::query_risk_gate_with_confidence(env, wallet, asset_pair, gate_threshold, 0)
     }
 
+    /// Payable variant of [`Self::query_risk_gate`] that charges the configured
+    /// per-query fee (set via [`Self::set_gate_query_fee`]) and increments the
+    /// `accumulated_fees` counter.
+    ///
+    /// When the fee is `0` or no fee token is configured, the call behaves
+    /// identically to `query_risk_gate` (no transfer, no accumulation).
+    /// When a non-zero fee is configured and a fee token is set, the caller
+    /// is charged `fee` stroops via the SEP-41 `TokenClient::transfer` path
+    /// and `accumulated_fees` is incremented by the same amount.
+    ///
+    /// **This function is not infallible.** A failed token transfer will cause
+    /// the transaction to trap.  Use [`Self::query_risk_gate`] when an
+    /// infallible, side-effect-free read is required (e.g. inside another
+    /// protocol's guard clause).
+    ///
+    /// # Arguments
+    /// - `caller` — the address whose token balance will be debited.
+    /// - `wallet`, `asset_pair`, `gate_threshold` — same semantics as
+    ///   `query_risk_gate`.
+    ///
+    /// # Panics
+    /// Traps if the configured fee token's `transfer` fails (insufficient
+    /// balance, not authorized, etc.).
+    pub fn query_risk_gate_paid(
+        env: Env,
+        caller: Address,
+        wallet: Address,
+        asset_pair: Symbol,
+        gate_threshold: u32,
+    ) -> bool {
+        // Always evaluate the gate first — the pure-read semantics are
+        // identical to query_risk_gate.
+        let result = Self::query_risk_gate(env.clone(), wallet, asset_pair, gate_threshold);
+
+        // Charge the configured fee if both fee and token are set.
+        let fee = storage::get_gate_query_fee(&env);
+        if fee > 0 {
+            if let Some(fee_token) = storage::get_fee_token(&env) {
+                let token_client = token::TokenClient::new(&env, &fee_token);
+                let contract_address = env.current_contract_address();
+                // Transfer from caller to the contract (fee collection).
+                token_client.transfer(&caller, &contract_address, &fee);
+                // Increment accumulated fees counter.
+                let accumulated = storage::get_accumulated_fees(&env);
+                storage::set_accumulated_fees(&env, accumulated + fee);
+            }
+        }
+
+        result
+    }
+
     /// Sets the per-query fee (in fee-token stroops) charged on each
     /// `query_risk_gate` call. `0` disables fee collection. Admin only.
     ///
@@ -5176,8 +5233,13 @@ impl ScoreGateScoreContract {
         if !storage::has_admin(&env) {
             return Err(Error::NotInitialized);
         }
+        // Reject negative fees — would corrupt fee accounting.
+        if amount < 0 {
+            return Err(Error::InvalidScore);
+        }
         storage::get_admin(&env).require_auth();
         storage::set_gate_query_fee(&env, amount);
+        events::gate_query_fee_set(&env, amount);
         #[cfg(any(test, feature = "testutils"))]
         invariants::invariant_check(&env);
         Ok(())
@@ -9489,12 +9551,16 @@ impl ScoreGateScoreContract {
     }
 
     /// Clears multiple `(wallet, asset_pair)` cooldown entries in one admin
-    /// operation. Emits the same `rl_ovrd` event for each cleared entry and
-    /// returns the number of entries processed.
+    /// operation.  For each cleared entry, emits the same `rl_ovrd` event and
+    /// persists a `RateLimitOverrideEntry` audit record (with the operator
+    /// justification hash and timestamp) — matching the compliance
+    /// guarantees of the single-override path (`override_rate_limit`).
+    /// Returns the number of entries processed.
     pub fn batch_override_rate_limit(
         env: Env,
         admin_signers: Vec<Address>,
         entries: Vec<(Address, Symbol)>,
+        justification: Bytes,
     ) -> Result<u32, Error> {
         if !storage::has_admin(&env) {
             return Err(Error::NotInitialized);
@@ -9504,9 +9570,19 @@ impl ScoreGateScoreContract {
         }
         Self::require_admin_auth(&env, &admin_signers)?;
         let admin = storage::get_admin(&env);
+        let justification_hash = env.crypto().sha256(&justification);
+        let timestamp = env.ledger().timestamp();
         for i in 0..entries.len() {
             let (wallet, asset_pair) = entries.get(i).unwrap();
             storage::clear_last_submit_time(&env, &wallet, &asset_pair);
+            let entry = crate::types::RateLimitOverrideEntry {
+                admin: admin.clone(),
+                wallet: wallet.clone(),
+                asset_pair: asset_pair.clone(),
+                timestamp,
+                justification_hash: justification_hash.clone().into(),
+            };
+            storage::append_rate_limit_override_log(&env, &entry);
             events::rate_limit_overridden(&env, &admin, &wallet, &asset_pair);
         }
         Ok(entries.len())
@@ -10430,7 +10506,8 @@ impl ScoreGateScoreContract {
     /// # Errors
     /// - [`Error::NotInitialized`] — contract has no admin.
     /// - [`Error::ContractPaused`] — admin has activated the circuit breaker.
-    /// - [`Error::InvalidScore`] — `amount` is zero.
+    /// - [`Error::InvalidWithdrawalAmount`] — `amount` is zero or negative.
+    /// - [`Error::InsufficientFunds`] — `amount` exceeds accumulated fees.
     /// - [`Error::FeeTokenNotSet`] — `set_fee_token` has not been called.
     /// - [`Error::ContractPaused`] — a concurrent withdrawal is running.
     pub fn withdraw_fees(
@@ -10449,13 +10526,19 @@ impl ScoreGateScoreContract {
         Self::require_admin_auth(&env, &admin_signers)?;
         let admin = storage::get_admin(&env);
 
-        // Reject zero-amount withdrawals early.
-        if amount == 0 {
-            return Err(Error::InvalidScore);
+        // Reject zero and negative-amount withdrawals early.
+        if amount <= 0 {
+            return Err(Error::InvalidWithdrawalAmount);
         }
 
         // Fee token must be configured.
         let fee_token = storage::get_fee_token(&env).ok_or(Error::FeeTokenNotSet)?;
+
+        // Verify sufficient accumulated fees.
+        let accumulated = storage::get_accumulated_fees(&env);
+        if amount > accumulated {
+            return Err(Error::InsufficientFunds);
+        }
 
         // The destination must be the pre-registered fee recipient, and that
         // recipient must independently authorize this specific withdrawal.
@@ -10478,6 +10561,9 @@ impl ScoreGateScoreContract {
         let contract_address = env.current_contract_address();
         let token_client = token::TokenClient::new(&env, &fee_token);
         token_client.transfer(&contract_address, &recipient, &amount);
+
+        // Decrement the accumulated fees counter by the withdrawn amount.
+        storage::set_accumulated_fees(&env, accumulated - amount);
 
         // Release the lock and emit the audit event.
         storage::clear_withdrawal_lock(&env);

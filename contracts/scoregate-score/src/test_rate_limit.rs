@@ -7,7 +7,7 @@
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Ledger as _},
-    Address, Env, Vec,
+    Address, Bytes, Env, Vec,
 };
 
 use crate::{
@@ -601,8 +601,18 @@ fn test_batch_override_rate_limit_single_entry() {
         );
     let mut entries: Vec<(Address, soroban_sdk::Symbol)> = Vec::new(&env);
     entries.push_back((wallet.clone(), pair.clone()));
-    assert_eq!(client.batch_override_rate_limit(&Vec::new(&env), &entries), 1);
+    let justification = Bytes::from_slice(&env, b"correcting bad score");
+    assert_eq!(
+        client.batch_override_rate_limit(&Vec::new(&env), &entries, &justification),
+        1
+    );
     assert!(client.get_last_submit_time(&wallet, &pair).is_none());
+
+    // Audit entry should be recorded.
+    let log = client.get_rate_limit_override_log();
+    assert_eq!(log.len(), 1);
+    assert_eq!(log.get(0).unwrap().wallet, wallet);
+    assert_eq!(log.get(0).unwrap().asset_pair, pair);
 }
 
 #[test]
@@ -643,9 +653,19 @@ fn test_batch_override_rate_limit_multiple_entries() {
     entries.push_back((wallet1.clone(), pair1.clone()));
     entries.push_back((wallet2.clone(), pair2.clone()));
 
-    assert_eq!(client.batch_override_rate_limit(&Vec::new(&env), &entries), 2);
+    let justification = Bytes::from_slice(&env, b"batch correction");
+    assert_eq!(
+        client.batch_override_rate_limit(&Vec::new(&env), &entries, &justification),
+        2
+    );
     assert!(client.get_last_submit_time(&wallet1, &pair1).is_none());
     assert!(client.get_last_submit_time(&wallet2, &pair2).is_none());
+
+    // Audit entries should be recorded for both wallets.
+    let log = client.get_rate_limit_override_log();
+    assert_eq!(log.len(), 2);
+    assert_eq!(log.get(0).unwrap().wallet, wallet1);
+    assert_eq!(log.get(1).unwrap().wallet, wallet2);
 }
 
 #[test]
@@ -658,7 +678,11 @@ fn test_batch_override_rate_limit_oversized_batch_rejected() {
         entries.push_back((Address::generate(&env), pair.clone()));
     }
 
-    let result = client.try_batch_override_rate_limit(&Vec::new(&env), &entries);
+    let result = client.try_batch_override_rate_limit(
+        &Vec::new(&env),
+        &entries,
+        &Bytes::from_slice(&env, b"oversized"),
+    );
     assert_eq!(result, Err(Ok(Error::BatchTooLarge)));
 }
 

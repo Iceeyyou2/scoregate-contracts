@@ -3230,6 +3230,10 @@ pub fn get_accumulated_fees(env: &Env) -> i128 {
     env.storage().instance().get(&GateDataKey::AccumulatedFees).unwrap_or(0)
 }
 
+pub fn set_accumulated_fees(env: &Env, amount: i128) {
+    env.storage().instance().set(&GateDataKey::AccumulatedFees, &amount);
+}
+
 pub fn set_arch_owner(env: &Env, owner: &Address) {
     env.storage().instance().set(&ArchitectureDataKey::ArchOwner, owner);
 }

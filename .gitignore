@@ -12,4 +12,5 @@ check.log
 # test snapshots
 **/snapshots/
 *.snap
+**/test_snapshots/
 

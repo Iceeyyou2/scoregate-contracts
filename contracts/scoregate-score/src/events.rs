@@ -516,6 +516,13 @@ pub fn fee_token_set(env: &Env, token: &Address) {
     env.events().publish((symbol_short!("ft_set"), EVENT_VERSION), token.clone());
 }
 
+/// Emitted when the admin updates the per-query gate fee via
+/// `set_gate_query_fee`.  The payload is the new fee amount in stroops
+/// (zero disables fee collection).
+pub fn gate_query_fee_set(env: &Env, amount: i128) {
+    env.events().publish((symbol_short!("gqf_set"), EVENT_VERSION), amount);
+}
+
 pub fn fee_recipient_set(env: &Env, recipient: &Address) {
     env.events().publish((symbol_short!("fr_set"), EVENT_VERSION), recipient.clone());
 }

@@ -64,6 +64,9 @@ impl Error {
     pub const AssetPairTooLong: Error = Error::InvalidArgument;
     pub const InvalidMinConfidence: Error = Error::InvalidConfidence;
     pub const InvalidWithdrawalAmount: Error = Error::InvalidThreshold;
+    /// Returned by `withdraw_fees` when `amount` exceeds the accumulated fees
+    /// counter. Reused discriminant: the enum is already at the 50-variant XDR limit.
+    pub const InsufficientFunds: Error = Error::InvalidScore;
     pub const WithdrawalInProgress: Error = Error::Unauthorized;
     pub const PairPaused: Error = Error::ContractPaused;
     pub const PausedPairIndexFull: Error = Error::ServiceSetFull;
