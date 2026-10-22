@@ -352,7 +352,7 @@ fn test_get_consensus_threshold_k_no_shards_returns_error() {
 }
 
 #[test]
-fn test_get_score_highest_score_policy() {
+fn test_get_score_prefers_fresher_over_higher_score() {
     let env = Env::default();
     env.mock_all_auths();
     let admin = Address::generate(&env);
@@ -360,7 +360,7 @@ fn test_get_score_highest_score_policy() {
     let pair = symbol_short!("XLM_USDC");
 
     let (shard1_id, shard1_client) = setup_score_shard(&env);
-    // shard1: score=50, timestamp=100
+    // shard1: score=50, timestamp=100 (lower score but fresher)
     shard1_client.submit_score(
         &Vec::new(&env),
         &wallet,
@@ -395,10 +395,10 @@ fn test_get_score_highest_score_policy() {
     agg_client.add_shard(&shard1_id);
     agg_client.add_shard(&shard2_id);
 
-    // Default policy is HighestScore — should return score 90 from shard2
+    // Freshness (timestamp) is prioritized over score — should return score 50 from shard1
     let score = agg_client.get_score(&wallet, &pair);
-    assert_eq!(score.score, 90);
-    assert_eq!(score.timestamp, 50);
+    assert_eq!(score.score, 50);
+    assert_eq!(score.timestamp, 100);
 }
 
 #[test]
@@ -1294,4 +1294,132 @@ fn test_remove_shard_emits_shard_removed_event() {
         topics == expected_topics
     });
     assert!(found, "remove_shard must emit a shard_removed (sh_rmvd) event");
+}
+
+// ── Issue #168: supports_interface advertises cgate ──────────────────────────
+
+#[test]
+fn test_supports_interface_cgate() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let agg_id = env.register_contract(None, ScoreGateAggregator);
+    let client = ScoreGateAggregatorClient::new(&env, &agg_id);
+    assert!(client.supports_interface(&symbol_short!("cgate")));
+}
+
+// ── Issue #169: query_risk_gate_relative + rgate capability ──────────────────
+
+#[test]
+fn test_supports_interface_rgate() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let agg_id = env.register_contract(None, ScoreGateAggregator);
+    let client = ScoreGateAggregatorClient::new(&env, &agg_id);
+    assert!(client.supports_interface(&symbol_short!("rgate")));
+}
+
+#[test]
+fn test_query_risk_gate_relative_no_shards_fails_closed() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let agg_id = env.register_contract(None, ScoreGateAggregator);
+    let client = ScoreGateAggregatorClient::new(&env, &agg_id);
+    let wallet = Address::generate(&env);
+    let pair = symbol_short!("XLM_USDC");
+    assert!(!client.query_risk_gate_relative(&wallet, &pair, &10));
+}
+
+#[test]
+fn test_query_risk_gate_relative_all_shards_pass() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let agg_id = env.register_contract(None, ScoreGateAggregator);
+    let client = ScoreGateAggregatorClient::new(&env, &agg_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    let (shard1_id, shard1) = setup_score_shard(&env);
+    let (shard2_id, shard2) = setup_score_shard(&env);
+    client.add_shard(&shard1_id);
+    client.add_shard(&shard2_id);
+
+    let wallet = Address::generate(&env);
+    let pair = symbol_short!("XLM_USDC");
+    // Submit low scores so the wallet is below the percentile threshold
+    shard1.submit_score(&Vec::new(&env), &wallet, &pair, &10, &false, &false, &1, &100, &1, &None);
+    shard2.submit_score(&Vec::new(&env), &wallet, &pair, &10, &false, &false, &1, &100, &1, &None);
+
+    // With a high percentile threshold (e.g. 90), a low score should pass
+    assert!(client.query_risk_gate_relative(&wallet, &pair, &90));
+}
+
+#[test]
+fn test_query_risk_gate_relative_one_shard_rejects() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let agg_id = env.register_contract(None, ScoreGateAggregator);
+    let client = ScoreGateAggregatorClient::new(&env, &agg_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    let (shard1_id, shard1) = setup_score_shard(&env);
+    let (shard2_id, shard2) = setup_score_shard(&env);
+    client.add_shard(&shard1_id);
+    client.add_shard(&shard2_id);
+
+    let wallet = Address::generate(&env);
+    let pair = symbol_short!("XLM_USDC");
+    // Shard1: low score, Shard2: high score
+    shard1.submit_score(&Vec::new(&env), &wallet, &pair, &10, &false, &false, &1, &100, &1, &None);
+    shard2.submit_score(&Vec::new(&env), &wallet, &pair, &95, &false, &false, &1, &100, &1, &None);
+
+    // If any shard rejects, the gate fails closed
+    assert!(!client.query_risk_gate_relative(&wallet, &pair, &10));
+}
+
+#[test]
+fn test_query_risk_gate_relative_fails_closed_all_unhealthy() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let agg_id = env.register_contract(None, ScoreGateAggregator);
+    let client = ScoreGateAggregatorClient::new(&env, &agg_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    let (shard1_id, _) = setup_score_shard(&env);
+    let (shard2_id, _) = setup_score_shard(&env);
+    client.add_shard(&shard1_id);
+    client.add_shard(&shard2_id);
+
+    // Mark both shards unhealthy
+    client.set_shard_health(&shard1_id, &false);
+    client.set_shard_health(&shard2_id, &false);
+
+    let wallet = Address::generate(&env);
+    let pair = symbol_short!("XLM_USDC");
+    assert!(!client.query_risk_gate_relative(&wallet, &pair, &10));
+}
+
+// ── Issue #167: detect_split_brain treats ScoreNotFound correctly ─────────────
+
+#[test]
+fn test_detect_split_brain_unscored_wallet_not_unavailable() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = init_aggregator(&env);
+    let (shard_a, _) = setup_score_shard(&env);
+    let (shard_b, _) = setup_score_shard(&env);
+    client.add_shard(&shard_a);
+    client.add_shard(&shard_b);
+
+    // Query a wallet that has NO score on any shard
+    let wallet = Address::generate(&env);
+    let pair = symbol_short!("XLM_USDC");
+    let report = client.detect_split_brain(&wallet, &pair);
+
+    // Shards should NOT be marked Unavailable — ScoreNotFound is not a shard failure
+    assert_eq!(report.unavailable_count, 0, "unscored wallet must not mark shards as Unavailable");
+    assert_eq!(report.healthy_count, 2);
+    // With all shards returning ScoreNotFound, they are still aligned on config
+    assert_eq!(report.status, SplitBrainStatus::Aligned);
 }

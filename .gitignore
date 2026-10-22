@@ -13,3 +13,18 @@ check.log
 **/snapshots/
 *.snap
 
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# test snapshots and generated artifacts
+test_snapshot*
+*.tmp
+
