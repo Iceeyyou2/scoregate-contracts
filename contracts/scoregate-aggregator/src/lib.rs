@@ -328,6 +328,44 @@ impl ScoreGateAggregator {
             .unwrap_or_else(|| Vec::new(&env))
     }
 
+    /// Re-probes an already-registered shard's interface capabilities and
+    /// updates the stored `ShardCapabilities` snapshot to reflect its current
+    /// state. Useful after an in-place shard upgrade that adds new capabilities
+    /// (e.g. `federated`, `sbrain`, `batch_attested`) without changing the
+    /// shard's contract address.
+    ///
+    /// Requires admin authentication. Returns `ShardNotRegistered` if `shard`
+    /// is not in the active shard list. Emits `sh_caps_refreshed` on success.
+    pub fn refresh_shard_capabilities(env: Env, shard: Address) -> Result<(), Error> {
+        let admin: Address =
+            env.storage().instance().get(&DataKey::Admin).ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+
+        // Verify the shard is currently registered.
+        let shards: Vec<Address> =
+            env.storage().instance().get(&DataKey::Shards).unwrap_or_else(|| Vec::new(&env));
+        let mut found = false;
+        for i in 0..shards.len() {
+            if shards.get(i).unwrap() == shard {
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            return Err(Error::ShardNotRegistered);
+        }
+
+        // Re-probe and persist the updated capability snapshot.
+        let snapshot = probe_capabilities(&env, &shard);
+        env.storage().instance().set(&DataKey::ShardCapabilities(shard.clone()), &snapshot);
+
+        env.events().publish(
+            (symbol_short!("sh_caps_refreshed"), shard),
+            env.ledger().timestamp(),
+        );
+        Ok(())
+    }
+
     /// Returns `true` if `shard` no longer advertises all the capabilities it
     /// reported at registration time — i.e. a post-registration downgrade is
     /// detected.  Returns `false` when the shard is healthy and still passes
