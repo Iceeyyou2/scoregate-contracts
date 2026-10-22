@@ -45,7 +45,17 @@ echo "== scoregate-score health check: $CONTRACT_ID on $NETWORK =="
 
 check "admin address"    invoke get_admin
 check "service address"  invoke get_service
-check "pause state"      invoke is_paused
+# Pause state: contract must NOT be paused (is_paused must return false)
+PAUSE_OUTPUT=$(invoke is_paused 2>&1) && PAUSE_RC=0 || PAUSE_RC=$?
+if [[ "$PAUSE_RC" -ne 0 ]]; then
+  echo "FAIL  pause state: $PAUSE_OUTPUT"
+  FAILURES=$((FAILURES + 1))
+elif [[ "$PAUSE_OUTPUT" == "true" ]]; then
+  echo "FAIL  pause state: contract is PAUSED"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS  pause state: $PAUSE_OUTPUT"
+fi
 check "schema version"   invoke get_version
 check "service liveness" invoke is_service_alive
 

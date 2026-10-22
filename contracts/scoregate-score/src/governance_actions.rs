@@ -93,6 +93,9 @@ pub const GOV_ACTION_UNPAUSE: u8 = 0x05;
 /// chain regardless of whether it is eventually executed or vetoed.
 pub const GOV_ACTION_PROPOSE_UPGRADE: u8 = 0x06;
 
+/// eto_upgrade - veto a pending upgrade proposal.
+pub const GOV_ACTION_VETO_UPGRADE: u8 = 0x07;
+
 // ── Human-readable name strings ───────────────────────────────────────────────
 //
 // Each name is ≤ 9 ASCII characters so it can be used directly with
@@ -114,7 +117,7 @@ pub const GOV_ACTION_NAME_PAUSE: &str = "pause";
 pub const GOV_ACTION_NAME_UNPAUSE: &str = "unpause";
 
 /// Human-readable name for [`GOV_ACTION_PROPOSE_UPGRADE`].
-pub const GOV_ACTION_NAME_PROPOSE_UPGRADE: &str = "upg_prop";
+pub const GOV_ACTION_NAME_PROPOSE_UPGRADE: &str = "upg_prop";`n`n/// Human-readable name for [`GOV_ACTION_VETO_UPGRADE`].`npub const GOV_ACTION_NAME_VETO_UPGRADE: &str = "upg_veto";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -136,6 +139,7 @@ pub fn action_name(discriminant: u8) -> &'static str {
         GOV_ACTION_PAUSE => GOV_ACTION_NAME_PAUSE,
         GOV_ACTION_UNPAUSE => GOV_ACTION_NAME_UNPAUSE,
         GOV_ACTION_PROPOSE_UPGRADE => GOV_ACTION_NAME_PROPOSE_UPGRADE,
+        GOV_ACTION_VETO_UPGRADE => GOV_ACTION_NAME_VETO_UPGRADE,
         _ => "unknown",
     }
 }
@@ -161,5 +165,7 @@ pub fn all_actions() -> &'static [(u8, &'static str)] {
         (GOV_ACTION_PAUSE, GOV_ACTION_NAME_PAUSE),
         (GOV_ACTION_UNPAUSE, GOV_ACTION_NAME_UNPAUSE),
         (GOV_ACTION_PROPOSE_UPGRADE, GOV_ACTION_NAME_PROPOSE_UPGRADE),
+        (GOV_ACTION_VETO_UPGRADE, GOV_ACTION_NAME_VETO_UPGRADE),
     ]
 }
+

@@ -24,9 +24,28 @@ pub fn borrow_executed(env: &Env, user: &Address, asset_pair: &Symbol, amount: i
 
 /// Emitted when the admin updates the borrow gate config via
 /// `set_borrow_gate_config`.
-pub fn gate_config_updated(env: &Env, gate_threshold: u32, min_confidence: u32) {
-    env.events()
-        .publish((symbol_short!("gate_cfg"), EVENT_VERSION), (gate_threshold, min_confidence));
+///
+/// Carries every field mutated by that call so monitoring tools can detect
+/// changes to failure policies and freshness tolerances, not just the
+/// threshold/confidence pair.
+pub fn gate_config_updated(
+    env: &Env,
+    gate_threshold: u32,
+    min_confidence: u32,
+    fail_policy: u32,
+    max_staleness_secs: u64,
+    required_oracle_version: u32,
+) {
+    env.events().publish(
+        (symbol_short!("gate_cfg"), EVENT_VERSION),
+        (
+            gate_threshold,
+            min_confidence,
+            fail_policy,
+            max_staleness_secs,
+            required_oracle_version,
+        ),
+    );
 }
 
 /// Emitted when the admin rotates the configured ScoreGate oracle via

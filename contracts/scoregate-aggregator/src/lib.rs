@@ -704,7 +704,14 @@ impl ScoreGateAggregator {
                         max_depth = depth;
                     }
                 }
-                _ => {
+                Ok(Err(_)) => {
+                    // #60: a read query must not mutate storage, so the failure is
+                    // reported as a diagnostic event instead of a `LastShardFailure`
+                    // write. Health is set explicitly via `set_shard_health`.
+                    env.events()
+                        .publish((symbol_short!("sh_fail"), shard.clone()), FAILURE_CONTRACT_ERROR);
+                }
+                Err(_) => {
                     // #60: a read query must not mutate storage, so the failure is
                     // reported as a diagnostic event instead of a `LastShardFailure`
                     // write. Health is set explicitly via `set_shard_health`.
@@ -827,7 +834,7 @@ impl ScoreGateAggregator {
             }
         }
 
-        let required_quorum = (healthy_count / 2) + 1;
+        let required_quorum = if healthy_count == 0 { 0 } else { (healthy_count / 2) + 1 };
         let (canonical, quorum_count) = select_canonical_fingerprint(&available);
         let mut mismatch_count = 0u32;
         let mut final_diagnostics: Vec<ShardConfigDiagnostic> = Vec::new(&env);
@@ -901,6 +908,9 @@ fn probe_capabilities(env: &Env, shard: &Address) -> Vec<Symbol> {
 }
 
 fn is_shard_healthy(env: &Env, shard: &Address) -> bool {
+    if !is_shard_registered(env, shard) {
+        return false;
+    }
     env.storage().instance().get(&DataKey::ShardHealth(shard.clone())).unwrap_or(true)
 }
 
@@ -1010,3 +1020,6 @@ enum DataKey {
     /// `get_shard_capabilities` and downgrade-detection tests.
     ShardCapabilities(Address),
 }
+
+
+

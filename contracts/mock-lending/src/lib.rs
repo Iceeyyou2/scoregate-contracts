@@ -47,6 +47,7 @@ pub enum MockLendingError {
     Unauthorized = 7,
     /// A gate threshold or confidence floor exceeds the valid 0-100 scale.
     InvalidThreshold = 8,
+    ContractPaused = 9,
 }
 
 #[contracttype]
@@ -64,6 +65,7 @@ enum DataKey {
     RequiredOracleVersion,
     ExpandedRiskScore,
     MaxBorrowAmount,
+    Paused,
 }
 
 #[contract]
@@ -122,7 +124,9 @@ impl MockLending {
         admin: Address,
         max_borrow_amount: i128,
     ) -> Result<(), MockLendingError> {
+        user.require_auth();
         Self::require_admin(&env, &admin)?;
+        if Self::is_paused(env.clone()) { return Err(MockLendingError::ContractPaused); }
         if max_borrow_amount <= 0 {
             return Err(MockLendingError::InvalidAmount);
         }
@@ -189,69 +193,20 @@ impl MockLending {
         env.storage().instance().set(&DataKey::FailPolicy, &fail_policy);
         env.storage().instance().set(&DataKey::MaxStalenessSecs, &max_staleness_secs);
         env.storage().instance().set(&DataKey::RequiredOracleVersion, &required_oracle_version);
-        events::gate_config_updated(&env, gate_threshold, min_confidence);
+        events::gate_config_updated(
+            &env,
+            gate_threshold,
+            min_confidence,
+            fail_policy,
+            max_staleness_secs,
+            required_oracle_version,
+        );
         Ok(())
     }
 
     fn require_admin(env: &Env, admin: &Address) -> Result<(), MockLendingError> {
         let configured: Address =
-            env.storage().instance().get(&DataKey::Admin).ok_or(MockLendingError::NotConfigured)?;
-        if &configured != admin {
-            return Err(MockLendingError::Unauthorized);
-        }
-        admin.require_auth();
-        Ok(())
-    }
-
-    fn allow_on_unavailable(policy: FailPolicy) -> Result<(), MockLendingError> {
-        match policy {
-            FailPolicy::FailOpen => Ok(()),
-            FailPolicy::FailClosed => Err(MockLendingError::OracleUnavailable),
-        }
-    }
-
-    /// Attempt a borrow for `user` against `asset_pair`. Rejected with
-    /// `RiskGateRejected` whenever ScoreGate's
-    /// `query_risk_gate_with_confidence` says the wallet's score is too
-    /// risky, missing, or not backed by enough confidence — even if the raw
-    /// risk score itself would otherwise pass. Callers that care about
-    /// detection lag should apply a max-age check before calling this.
-    pub fn borrow(
-        env: Env,
-        user: Address,
-        asset_pair: Symbol,
-        amount: i128,
-    ) -> Result<(), MockLendingError> {
-        let max_borrow = env
-            .storage()
-            .instance()
-            .get(&DataKey::MaxBorrowAmount)
-            .unwrap_or(DEFAULT_MAX_BORROW_AMOUNT);
-        if amount <= 0 || amount > max_borrow {
-            return Err(MockLendingError::InvalidAmount);
-        }
-
-        let scoregate: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::ScoreGate)
-            .ok_or(MockLendingError::NotConfigured)?;
-        let gate_threshold: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::GateThreshold)
-            .ok_or(MockLendingError::NotConfigured)?;
-        let min_confidence: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::MinConfidence)
-            .ok_or(MockLendingError::NotConfigured)?;
-        let fail_policy: FailPolicy =
-            env.storage().instance().get(&DataKey::FailPolicy).unwrap_or(FailPolicy::FailClosed);
-        let max_staleness_secs: u64 =
-            env.storage().instance().get(&DataKey::MaxStalenessSecs).unwrap_or(604_800);
-        let required_oracle_version: u32 =
-            env.storage().instance().get(&DataKey::RequiredOracleVersion).unwrap_or(0);
+            env.storage().instance().get(&DataKey::Admin).ok_or(Mo
 
         let client = ScoreGateScoreContractClient::new(&env, &scoregate);
         if required_oracle_version > 0 {
@@ -289,4 +244,22 @@ impl MockLending {
         events::borrow_executed(&env, &user, &asset_pair, amount);
         Ok(())
     }
+    pub fn pause(env: Env, admin: Address) {
+        admin.require_auth();
+        let stored: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        if admin != stored { return; }
+        env.storage().instance().set(&DataKey::Paused, &true);
+    }
+
+    pub fn unpause(env: Env, admin: Address) {
+        admin.require_auth();
+        let stored: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        if admin != stored { return; }
+        env.storage().instance().set(&DataKey::Paused, &false);
+    }
+
+    pub fn is_paused(env: Env) -> bool {
+        env.storage().instance().get(&DataKey::Paused).unwrap_or(false)
+    }
 }
+

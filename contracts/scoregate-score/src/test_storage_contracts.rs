@@ -100,3 +100,49 @@ fn test_push_score_history_bounded_by_max_depth() {
         assert_eq!(history.get(2).unwrap().score, 4);
     });
 }
+
+// ── clear_score provenance cleanup (issue #283) ────────────────────────────
+//
+// `clear_score` must remove every piece of per-(wallet, asset_pair) metadata,
+// including `DataKeyE::SubmissionProvenance`. Otherwise a privacy deletion or
+// corrupted-score remediation leaves orphaned provenance that
+// `get_submission_provenance` keeps returning for a score that no longer
+// exists.
+
+#[test]
+fn test_clear_score_removes_submission_provenance() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, ScoreGateScoreContract);
+    let wallet = Address::generate(&env);
+    let pair = symbol_short!("XLM_USDC");
+
+    env.as_contract(&contract_id, || {
+        storage::set_score(&env, &wallet, &pair, &sample_score(42));
+        storage::set_submission_provenance(&env, &wallet, &pair, 7, 1_000, 3, 1, 0);
+        assert!(storage::get_submission_provenance(&env, &wallet, &pair).is_some());
+
+        storage::clear_score(&env, &wallet, &pair);
+
+        assert!(storage::get_score(&env, &wallet, &pair).is_none());
+        assert!(storage::get_submission_provenance(&env, &wallet, &pair).is_none());
+    });
+}
+
+#[test]
+fn test_clear_score_with_audit_removes_submission_provenance() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, ScoreGateScoreContract);
+    let wallet = Address::generate(&env);
+    let pair = symbol_short!("XLM_USDC");
+
+    env.as_contract(&contract_id, || {
+        storage::set_score(&env, &wallet, &pair, &sample_score(11));
+        storage::set_submission_provenance(&env, &wallet, &pair, 9, 2_000, 2, 1, 0);
+        assert!(storage::get_submission_provenance(&env, &wallet, &pair).is_some());
+
+        storage::clear_score_with_audit(&env, &wallet, &pair, &wallet);
+
+        assert!(storage::get_score(&env, &wallet, &pair).is_none());
+        assert!(storage::get_submission_provenance(&env, &wallet, &pair).is_none());
+    });
+}

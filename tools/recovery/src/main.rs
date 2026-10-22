@@ -338,23 +338,15 @@ fn cmd_verify(snapshot_path: &PathBuf, export_path: Option<&Path>) -> Result<()>
     eprintln!("  Timestamp:   {}", snapshot.timestamp);
 
     // Validate hex strings
-    if snapshot.score_root.len() != 64 {
-        eprintln!(
-            "  ⚠ WARNING: score_root is not 64 hex chars ({} chars)",
-            snapshot.score_root.len()
-        );
-    }
-    if snapshot.config_root.len() != 64 {
-        eprintln!(
-            "  ⚠ WARNING: config_root is not 64 hex chars ({} chars)",
-            snapshot.config_root.len()
-        );
-    }
-    if snapshot.auth_root.len() != 64 {
-        eprintln!(
-            "  ⚠ WARNING: auth_root is not 64 hex chars ({} chars)",
-            snapshot.auth_root.len()
-        );
+    for (name, root) in [
+        ("score_root", &snapshot.score_root),
+        ("config_root", &snapshot.config_root),
+        ("auth_root", &snapshot.auth_root),
+    ] {
+        if root.len() != 64 || !root.chars().all(|c| c.is_ascii_hexdigit()) {
+            bail!("Invalid cryptographic root in snapshot");
+        }
+        let _ = name;
     }
 
     if let Some(export_path) = export_path {

@@ -130,7 +130,24 @@ impl RegressionSeverity {
     }
 }
 
-/// WASM binary comparison for regression detection
+/// Compute total static memory required by data segments, accounting for base offsets.
+/// Returns max(offset + length) across all active segments (0 if none).
+pub fn compute_static_memory(segments: &[(u64, u64)]) -> u64 {
+    segments
+        .iter()
+        .map(|(offset, length)| offset.saturating_add(*length))
+        .max()
+        .unwrap_or(0)
+}
+
+/// Convert static memory bytes to WASM pages (64 KiB each), rounding up.
+pub fn static_memory_pages(bytes: u64) -> u64 {
+    if bytes == 0 {
+        0
+    } else {
+        (bytes + 65535) / 65536
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WasmBinaryComparison {
     /// Previous binary analysis
@@ -363,7 +380,11 @@ mod tests {
     }
 
     #[test]
-    fn test_no_regression_for_size_decrease() {
+    fn test_static_memory_offset() {
+        let segments = [(0u64, 1000u64), (65536u64, 1000u64)];
+        assert_eq!(compute_static_memory(&segments), 66536);
+        assert_eq!(static_memory_pages(compute_static_memory(&segments)), 2);
+    }
         let mut prev = WasmBinaryAnalysis::new(1000000);
         prev.add_module("score", 500000, SizeCategory::Core);
 

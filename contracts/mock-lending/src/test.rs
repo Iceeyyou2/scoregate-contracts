@@ -160,3 +160,45 @@ fn test_lending_set_max_borrow_amount_configuration() {
         Err(Ok(MockLendingError::Unauthorized))
     );
 }
+
+#[test]
+fn test_lending_set_borrow_gate_config_emits_full_event_payload() {
+    let fixture = setup();
+
+    let new_threshold = 80u32;
+    let new_confidence = 60u32;
+    let new_fail_policy = FailPolicy::Allow;
+    let new_max_staleness = 7_200u64;
+    let new_oracle_version = 2u32;
+
+    let before_events = fixture.env.events().all().len();
+    assert_eq!(
+        fixture.lending.try_set_borrow_gate_config(
+            &fixture.admin,
+            &new_threshold,
+            &new_confidence,
+            &new_fail_policy,
+            &new_max_staleness,
+            &new_oracle_version,
+        ),
+        Ok(Ok(()))
+    );
+    assert_eq!(fixture.env.events().all().len(), before_events + 1);
+
+    // Stored values reflect the update
+    assert_eq!(fixture.lending.get_gate_threshold(), new_threshold);
+    assert_eq!(fixture.lending.get_min_confidence(), new_confidence);
+    assert_eq!(fixture.lending.get_fail_policy(), new_fail_policy);
+    assert_eq!(fixture.lending.get_max_staleness_secs(), new_max_staleness);
+    assert_eq!(fixture.lending.get_required_oracle_version(), new_oracle_version);
+
+    // Emitted event carries the full payload matching stored keys
+    let events = fixture.env.events().all();
+    let (_, _, data) = events.last().unwrap();
+    let emitted: events::GateConfigUpdatedEvent = data.try_into_val(&fixture.env).unwrap();
+    assert_eq!(emitted.gate_threshold, new_threshold);
+    assert_eq!(emitted.min_confidence, new_confidence);
+    assert_eq!(emitted.fail_policy, new_fail_policy);
+    assert_eq!(emitted.max_staleness_secs, new_max_staleness);
+    assert_eq!(emitted.required_oracle_version, new_oracle_version);
+}

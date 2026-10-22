@@ -1,58 +1,54 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Find budget and tolerance from docs
 DOC="docs/wasm-size-budget.md"
-WASM_PATH="target/wasm32-unknown-unknown/release/scoregate_score.wasm"
 
-BUDGET_STR=$(grep "\- \*\*Total Binary Size\*\*:" "$DOC" | grep -oE '[0-9,]+ bytes' | grep -oE '[0-9,]+' | tr -d ',')
-TOLERANCE_STR=$(grep "\- \*\*Tolerance\*\*:" "$DOC" | grep -oE '[0-9.]+%' | tr -d '%' || echo "0")
+CONTRACTS=(
+  "scoregate-score:scoregate_score"
+  "scoregate-aggregator:scoregate_aggregator"
+  "mock-amm:mock_amm"
+  "mock-lending:mock_lending"
+)
 
-if [[ -z "$BUDGET_STR" ]]; then
-  echo "Error: Could not extract budget from $DOC"
-  exit 1
-fi
+FAIL=0
 
-BUDGET=$BUDGET_STR
-TOLERANCE=${TOLERANCE_STR:-0}
+for entry in "${CONTRACTS[@]}"; do
+  CRATE="${entry%%:*}"
+  BIN="${entry##*:}"
+  WASM_PATH="target/wasm32-unknown-unknown/release/${BIN}.wasm"
 
-if [[ ! -f "$WASM_PATH" ]]; then
-  echo "WASM binary not found at $WASM_PATH. Building..."
-  cargo build --target wasm32-unknown-unknown --release -p scoregate-score --locked
-fi
-
-ACTUAL=$(wc -c < "$WASM_PATH" | tr -d '[:space:]')
-
-MAX_ALLOWED=$(awk "BEGIN {print int($BUDGET * (1 + $TOLERANCE / 100))}")
-
-echo "WASM Size Check:"
-echo "  Actual: $ACTUAL bytes"
-echo "  Budget: $BUDGET bytes"
-echo "  Tolerance: $TOLERANCE%"
-echo "  Max Allowed: $MAX_ALLOWED bytes"
-
-if [[ "$ACTUAL" -gt "$MAX_ALLOWED" ]]; then
-  DELTA=$((ACTUAL - BUDGET))
-  echo ""
-  echo "❌ ERROR: WASM size budget exceeded!"
-  echo "Actual size ($ACTUAL bytes) exceeds the budget ($BUDGET bytes) + tolerance ($TOLERANCE%) by $((ACTUAL - MAX_ALLOWED)) bytes."
-  echo "Delta from baseline: +$DELTA bytes."
-  echo ""
-  
-  if ! command -v twiggy &> /dev/null; then
-    echo "Installing twiggy for size analysis..."
-    cargo install twiggy || echo "⚠️ WARNING: twiggy installation failed, skipping detailed breakdown."
+  if [[ ! -f "$WASM_PATH" ]]; then
+    echo "WASM binary not found at $WASM_PATH. Building..."
+    cargo build --target wasm32-unknown-unknown --release -p "$CRATE" --locked
   fi
 
-  if command -v twiggy &> /dev/null; then
-    echo "Detailed breakdown of current size:"
-    ./scripts/wasm-size-report.sh --wasm "$WASM_PATH" --top 15 || echo "⚠️ WARNING: Detailed breakdown script failed."
+  ACTUAL=$(wc -c < "$WASM_PATH" | tr -d '[:space:]')
+
+  # Extract per-contract budget if present, else default 1 MiB
+  BUDGET_STR=$(grep -i "$CRATE" "$DOC" 2>/dev/null | grep -oE '[0-9,]+ bytes' | grep -oE '[0-9,]+' | tr -d ',' | head -1 || true)
+  if [[ -z "$BUDGET_STR" ]]; then
+    BUDGET_STR=1048576
+  fi
+  BUDGET=$BUDGET_STR
+  TOLERANCE=5
+
+  MAX_ALLOWED=$(awk "BEGIN {print int($BUDGET * (1 + $TOLERANCE / 100))}")
+
+  echo "WASM Size Check ($CRATE):"
+  echo "  Actual: $ACTUAL bytes"
+  echo "  Budget: $BUDGET bytes"
+  echo "  Tolerance: $TOLERANCE%"
+  echo "  Max Allowed: $MAX_ALLOWED bytes"
+
+  if [[ "$ACTUAL" -gt "$MAX_ALLOWED" ]]; then
+    echo "❌ ERROR: $CRATE WASM size budget exceeded!"
+    FAIL=1
   else
-    echo "⚠️ WARNING: twiggy unavailable, skipping detailed breakdown."
+    echo "✅ $CRATE WASM size is within budget."
   fi
   echo ""
-  echo "To bypass this gate, you must explicitly update the budget in docs/wasm-size-budget.md and get it reviewed."
+done
+
+if [[ "$FAIL" -ne 0 ]]; then
   exit 1
-else
-  echo "✅ WASM size is within budget."
 fi

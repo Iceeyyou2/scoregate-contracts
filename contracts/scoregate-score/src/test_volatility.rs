@@ -88,3 +88,43 @@ fn test_volatility_resets_after_window_expires() {
     // After reset, only 1 sample → volatility = 0
     assert_eq!(client.get_pair_volatility(&pair), 0);
 }
+
+#[test]
+fn test_online_pair_correlation_symmetric_retrieval() {
+    let (env, client, _admin, _service) = initialized();
+    let pair_a = symbol_short!("XLM_USDC");
+    let pair_b = symbol_short!("BTC_USDC");
+
+    // Accumulate correlation state by submitting scores for both pairs.
+    let w1 = Address::generate(&env);
+    submit(&env, &client, &w1, &pair_a, 40);
+    let w2 = Address::generate(&env);
+    submit(&env, &client, &w2, &pair_b, 60);
+    let w3 = Address::generate(&env);
+    submit(&env, &client, &w3, &pair_a, 70);
+    let w4 = Address::generate(&env);
+    submit(&env, &client, &w4, &pair_b, 30);
+
+    // Correlation is symmetric: querying in either order must match.
+    let ab = client.get_online_pair_correlation(&pair_a, &pair_b);
+    let ba = client.get_online_pair_correlation(&pair_b, &pair_a);
+    assert_eq!(ab, ba);
+}
+
+#[test]
+fn test_reset_pair_correlation_order_independent() {
+    let (env, client, _admin, _service) = initialized();
+    let pair_a = symbol_short!("XLM_USDC");
+    let pair_b = symbol_short!("BTC_USDC");
+
+    let w1 = Address::generate(&env);
+    submit(&env, &client, &w1, &pair_a, 40);
+    let w2 = Address::generate(&env);
+    submit(&env, &client, &w2, &pair_b, 60);
+
+    // Reset using reversed argument order; both directions must be cleared.
+    client.reset_pair_correlation(&pair_b, &pair_a);
+
+    assert_eq!(client.get_online_pair_correlation(&pair_a, &pair_b), None);
+    assert_eq!(client.get_online_pair_correlation(&pair_b, &pair_a), None);
+}

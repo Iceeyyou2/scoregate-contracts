@@ -93,3 +93,51 @@ fn test_verify_governance_action_wrong_hash_fails() {
     let bad_hash = BytesN::from_array(&env, &[0xffu8; 32]);
     assert!(!client.verify_governance_action(&bad_hash, &Vec::new(&env)));
 }
+
+// ── #285: audit root preimage is unified and reconstructable offline ─────────
+
+#[test]
+fn test_audit_root_reconstructable_offline() {
+    let (env, client) = setup();
+
+    // Two sequential admin actions. Each must advance the audit root using the
+    // same preimage format as append_governance_action_raw:
+    //   new_root = SHA256(0x01 || old_root || action_data_32)
+    // so an off-chain replay tool can deterministically rebuild the root from
+    // the recorded action payloads alone (no timestamp/sequence divergence).
+    let genesis = BytesN::<32>::from_array(&env, &[0u8; 32]);
+
+    let mut action_data_1 = [0u8; 32];
+    action_data_1[31] = 1u8; // strict = true
+
+    let mut action_data_2 = [0u8; 32];
+    action_data_2[31] = 0u8; // strict = false
+
+    // Offline reconstruction of the expected head after both actions.
+    let expected_1 = sha256_chain_step(&env, &genesis, &action_data_1);
+    let expected_2 = sha256_chain_step(&env, &expected_1, &action_data_2);
+
+    // On-chain execution of the same two actions.
+    client.set_gate_enforcement_mode(&Vec::new(&env), &true);
+    let head_1 = client.get_governance_chain_head();
+    client.set_gate_enforcement_mode(&Vec::new(&env), &false);
+    let head_2 = client.get_governance_chain_head();
+
+    assert_eq!(
+        head_1, expected_1,
+        "audit root after first action must match offline reconstruction"
+    );
+    assert_eq!(
+        head_2, expected_2,
+        "audit root after second action must match offline reconstruction"
+    );
+}
+
+fn sha256_chain_step(env: &Env, old_root: &BytesN<32>, action_data: &[u8; 32]) -> BytesN<32> {
+    let mut buf = [0u8; 65];
+    buf[0] = 0x01;
+    buf[1..33].copy_from_slice(&old_root.to_array());
+    buf[33..65].copy_from_slice(action_data);
+    let digest = env.crypto().sha256(&soroban_sdk::Bytes::from_array(env, &buf));
+    BytesN::<32>::from_array(env, &digest.to_bytes().to_array())
+}

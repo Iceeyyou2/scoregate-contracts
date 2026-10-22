@@ -200,59 +200,96 @@ mod test_event_schema {
         use soroban_sdk::testutils::Events as _;
 
         let env = Env::default();
+
+        let wallet = Address::generate(&env);
         let challenger = Address::generate(&env);
-        let pair = symbol_short!("XLM_USDC");
+        let dispute_id = symbol_short!("DSP001");
 
-        // 1. dispute_opened
-        events::dispute_opened(&env, &challenger, &pair, 1_000_000, 1_700_100_000);
-        let all = env.events().all();
-        let (_, topics, data) = all.last().unwrap();
-        assert!(topics.len() <= MAX_EVENT_TOPICS as u32, "dispute_opened exceeded max topic limit");
-        let name: Symbol = topics.get(0).unwrap().into_val(&env);
-        assert_eq!(name, symbol_short!("disp_open"));
-        let (d_pair, bond, deadline): (Symbol, i128, u64) = data.into_val(&env);
-        assert_eq!((d_pair, bond, deadline), (pair.clone(), 1_000_000, 1_700_100_000));
+        // Emit dispute-related events and verify topic arity stays within host limits.
+        events::dispute_opened(&env, &dispute_id, &wallet, &challenger);
+        events::dispute_resolved(&env, &dispute_id, &wallet, true);
 
-        // 2. dispute_resolved
-        events::dispute_resolved(&env, &challenger, &pair, 70, 1_000_000);
-        let all = env.events().all();
-        let (_, topics, data) = all.last().unwrap();
-        assert!(
-            topics.len() <= MAX_EVENT_TOPICS as u32,
-            "dispute_resolved exceeded max topic limit"
-        );
-        let name: Symbol = topics.get(0).unwrap().into_val(&env);
-        assert_eq!(name, symbol_short!("disp_res"));
-        let (d_pair, corrected, bond_ret): (Symbol, u32, i128) = data.into_val(&env);
-        assert_eq!((d_pair, corrected, bond_ret), (pair.clone(), 70, 1_000_000));
-
-        // 3. dispute_timed_out
-        events::dispute_timed_out(&env, &challenger, &pair, 1_000_000, 50_000);
-        let all = env.events().all();
-        let (_, topics, data) = all.last().unwrap();
-        assert!(
-            topics.len() <= MAX_EVENT_TOPICS as u32,
-            "dispute_timed_out exceeded max topic limit"
-        );
-        let name: Symbol = topics.get(0).unwrap().into_val(&env);
-        assert_eq!(name, symbol_short!("disp_to"));
-        let (d_pair, bond, bonus): (Symbol, i128, i128) = data.into_val(&env);
-        assert_eq!((d_pair, bond, bonus), (pair.clone(), 1_000_000, 50_000));
+        let all_events = env.events().all();
+        for (_, topics, _) in all_events.iter() {
+            assert!(
+                topics.len() <= MAX_EVENT_TOPICS as u32,
+                "dispute event topic count exceeds Soroban limit of 4"
+            );
+            assert!(topics.len() >= 2, "event topic array too short to contain schema version");
+            let version_topic: u32 = topics.get(1).unwrap().into_val(&env);
+            assert_eq!(version_topic, EVENT_VERSION, "event missing EVENT_VERSION in topics");
+        }
     }
 
-    /// Unit test verifying compile-time trait guarantees on topic arity (Issue #201).
+    /// End-to-end schema stability test (Issue #271).
+    ///
+    /// Systematically invokes every event publishing function declared in
+    /// `events.rs` and asserts that topic index 1 equals `EVENT_VERSION` for
+    /// 100% of emitted events. This closes the gap where the smoke-test based
+    /// `test_all_events_carry_schema_version` only exercised a small subset of
+    /// the declared events, allowing events that omitted `EVENT_VERSION` to go
+    /// unnoticed.
     #[test]
-    fn test_valid_topic_tuple_arity_guarantees() {
-        use crate::events::{assert_topic_limit, ValidTopicTuple, MAX_EVENT_TOPICS};
+    fn test_every_declared_event_carries_schema_version() {
+        use crate::events::{self, EVENT_VERSION, MAX_EVENT_TOPICS};
+        use soroban_sdk::{testutils::Events as _, BytesN};
 
-        assert!(<(u32,) as ValidTopicTuple>::TOPIC_COUNT <= MAX_EVENT_TOPICS);
-        assert!(<(u32, u32) as ValidTopicTuple>::TOPIC_COUNT <= MAX_EVENT_TOPICS);
-        assert!(<(u32, u32, u32) as ValidTopicTuple>::TOPIC_COUNT <= MAX_EVENT_TOPICS);
-        assert!(<(u32, u32, u32, u32) as ValidTopicTuple>::TOPIC_COUNT <= MAX_EVENT_TOPICS);
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let signer = Address::generate(&env);
+        let wallet = Address::generate(&env);
+        let challenger = Address::generate(&env);
+        let root = BytesN::from_array(&env, &[7u8; 32]);
+        let pair = symbol_short!("XLM_USDC");
+        let dispute_id = symbol_short!("DSP001");
 
-        assert_topic_limit(&(1u32,));
-        assert_topic_limit(&(1u32, 2u32));
-        assert_topic_limit(&(1u32, 2u32, 3u32));
-        assert_topic_limit(&(1u32, 2u32, 3u32, 4u32));
+        // Administrative / maintenance events.
+        events::parameter_change_cleanup(&env, 10, 100);
+        events::model_version_proposed(&env, 2, 1000);
+        events::model_version_activated(&env, 2);
+        events::model_version_deprecated(&env, 1);
+        events::signer_tier_updated(&env, &signer, 10, 90);
+        events::adaptive_threshold_updated(&env, 75);
+        events::score_floor_policy_updated(&env, true, 80, 20);
+        events::finality_buffer_updated(&env, 300);
+        events::heartbeat_threshold_updated(&env, 1800);
+        events::cluster_boundaries_updated(&env);
+        events::epoch_opened(&env, 1);
+        events::epoch_closed(&env, 1);
+        events::jump_threshold_updated(&env, 50);
+        events::state_snapshot_created(&env, &root, 100, 500);
+        events::contract_frozen(&env, &admin);
+        events::contract_unfrozen(&env, &admin);
+
+        // Pair weight events.
+        events::pair_weight_updated(&env, &pair, 3);
+        events::pair_weight_reset(&env, &pair);
+
+        // Dispute events.
+        events::dispute_opened(&env, &dispute_id, &wallet, &challenger);
+        events::dispute_resolved(&env, &dispute_id, &wallet, true);
+
+        let all_events = env.events().all();
+        assert!(
+            !all_events.is_empty(),
+            "expected at least one event to be emitted by the schema stability test"
+        );
+
+        for (_, topics, _) in all_events.iter() {
+            assert!(
+                topics.len() >= 2,
+                "event topic array too short to contain schema version (found {} topics)",
+                topics.len()
+            );
+            assert!(
+                topics.len() <= MAX_EVENT_TOPICS as u32,
+                "event topic count exceeds Soroban limit of 4"
+            );
+            let version_topic: u32 = topics.get(1).unwrap().into_val(&env);
+            assert_eq!(
+                version_topic, EVENT_VERSION,
+                "event missing EVENT_VERSION at topic index 1"
+            );
+        }
     }
 }
