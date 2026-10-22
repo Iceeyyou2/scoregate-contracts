@@ -408,6 +408,32 @@ All events include a `EVENT_VERSION` (currently `1`) in their topic array to ena
 - **Use Case**: Contract unfreeze monitoring
 - **Example**: Contract unfrozen after incident resolution
 
+### 14. Aggregator Events
+
+#### `sh_added`
+- **Topic**: `("sh_added", EVENT_VERSION, shard)`
+- **Data**: `u64` (ledger timestamp)
+- **Use Case**: Track shard topology additions
+- **Example**: Shard `C...` added at timestamp 1700086400
+
+#### `sh_rmvd`
+- **Topic**: `("sh_rmvd", EVENT_VERSION, shard)`
+- **Data**: `u64` (ledger timestamp)
+- **Use Case**: Track shard topology removals
+- **Example**: Shard `C...` removed at timestamp 1700086500
+
+#### `sh_fail`
+- **Topic**: `("sh_fail", EVENT_VERSION, shard)`
+- **Data**: `u32` (failure type: 0=transport, 1=contract_error)
+- **Use Case**: Alert on shard communication failures during queries
+- **Example**: Transport failure (0) when calling shard `C...`
+
+#### `sh_health`
+- **Topic**: `("sh_health", EVENT_VERSION, shard)`
+- **Data**: `bool` (healthy status)
+- **Use Case**: Monitor shard health state changes via admin action
+- **Example**: Shard `C...` marked unhealthy (false)
+
 ## Event Indexer Implementation Tips
 
 ### 1. Handle Optional Versions

@@ -1260,9 +1260,9 @@ fn test_add_shard_emits_shard_added_event() {
 
     client.add_shard(&shard_id);
 
-    // The event topics are (symbol_short!("sh_added"), shard_address).
+    // The event topics are (symbol_short!("sh_added"), EVENT_VERSION, shard_address).
     let expected_topics: soroban_sdk::Vec<soroban_sdk::Val> =
-        (symbol_short!("sh_added"), shard_id.clone()).into_val(&env);
+        (symbol_short!("sh_added"), crate::EVENT_VERSION, shard_id.clone()).into_val(&env);
 
     let found = env.events().all().iter().any(|(_addr, topics, _data)| {
         topics == expected_topics
@@ -1286,12 +1286,37 @@ fn test_remove_shard_emits_shard_removed_event() {
     client.add_shard(&shard_id);
     client.remove_shard(&shard_id);
 
-    // The event topics are (symbol_short!("sh_rmvd"), shard_address).
+    // The event topics are (symbol_short!("sh_rmvd"), EVENT_VERSION, shard_address).
     let expected_topics: soroban_sdk::Vec<soroban_sdk::Val> =
-        (symbol_short!("sh_rmvd"), shard_id.clone()).into_val(&env);
+        (symbol_short!("sh_rmvd"), crate::EVENT_VERSION, shard_id.clone()).into_val(&env);
 
     let found = env.events().all().iter().any(|(_addr, topics, _data)| {
         topics == expected_topics
     });
     assert!(found, "remove_shard must emit a shard_removed (sh_rmvd) event");
+}
+
+#[test]
+fn test_health_event_includes_event_version() {
+    use soroban_sdk::testutils::Events as _;
+    use soroban_sdk::IntoVal;
+
+    let env = Env::default();
+    env.mock_all_auths();
+    let agg_id = env.register_contract(None, ScoreGateAggregator);
+    let client = ScoreGateAggregatorClient::new(&env, &agg_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+    let (shard_id, _) = setup_score_shard(&env);
+    client.add_shard(&shard_id);
+
+    client.set_shard_health(&shard_id, &false);
+
+    let expected_topics: soroban_sdk::Vec<soroban_sdk::Val> =
+        (symbol_short!("sh_health"), crate::EVENT_VERSION, shard_id.clone()).into_val(&env);
+
+    let found = env.events().all().iter().any(|(_addr, topics, _data)| {
+        topics == expected_topics
+    });
+    assert!(found, "set_shard_health must emit sh_health event with EVENT_VERSION topic");
 }
