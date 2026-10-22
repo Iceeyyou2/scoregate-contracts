@@ -1250,6 +1250,17 @@ pub fn clear_score(env: &Env, wallet: &Address, asset_pair: &Symbol) {
     env.storage().persistent().remove(&DataKey::ScoreCount(wallet.clone(), asset_pair.clone()));
     env.storage().persistent().remove(&DataKey::LastSubmitTime(wallet.clone(), asset_pair.clone()));
     env.storage().instance().remove(&DataKeyD::TokenBucket(wallet.clone(), asset_pair.clone()));
+    // #225: remove JumpStats auxiliary key to prevent orphaned persistent entries.
+    env.storage().persistent().remove(&DataKey::JumpStats(wallet.clone(), asset_pair.clone()));
+    // #225: remove BandEntryTime auxiliary key (stored as temporary) to prevent
+    // orphaned temporary entries for wallets that were in the high-risk band.
+    env.storage()
+        .temporary()
+        .remove(&DataKeyC::BandEntryTime(wallet.clone(), asset_pair.clone()));
+    // #225: decrement counters so aggregate statistics stay consistent with
+    // the actual number of stored score entries.
+    decrement_pair_score_count(env, asset_pair);
+    decrement_total_wallets_scored(env);
     remove_pair_for_wallet(env, wallet, asset_pair);
     remove_score_entry(env, wallet, asset_pair);
     clear_counterparty_links(env, wallet, asset_pair);
@@ -1517,11 +1528,15 @@ pub fn get_gate_open(env: &Env) -> bool {
 }
 
 pub fn get_gate_enforcement_mode(env: &Env) -> bool {
-    env.storage().instance().get(&GateDataKey::GateOpen).unwrap_or(false)
+    // #223: must use GateEnforcementMode, not GateOpen, so the two keys remain
+    // independent. GateOpen governs public gate accessibility; GateEnforcementMode
+    // governs strict caller allowlisting.
+    env.storage().instance().get(&GateDataKey::GateEnforcementMode).unwrap_or(false)
 }
 
 pub fn set_gate_enforcement_mode(env: &Env, strict: bool) {
-    env.storage().instance().set(&GateDataKey::GateOpen, &strict);
+    // #223: write to GateEnforcementMode, not GateOpen.
+    env.storage().instance().set(&GateDataKey::GateEnforcementMode, &strict);
 }
 
 // ── Time-weighted exponential decay ──────────────────────────────────────────
@@ -2371,6 +2386,14 @@ pub fn get_failover_contract(env: &Env) -> Option<Address> {
     env.storage().instance().get(&DataKeyB::FailoverContract)
 }
 
+/// Removes the configured failover contract. After this call,
+/// `get_failover_contract` returns `None` and gate queries no longer
+/// delegate to any secondary. #224: enables safe decommissioning of
+/// failover routes.
+pub fn clear_failover_contract(env: &Env) {
+    env.storage().instance().remove(&DataKeyB::FailoverContract);
+}
+
 // ── Aggregate service pubkey (threshold attestation) ─────────────────────────
 
 pub fn get_aggregate_service_pubkey(env: &Env) -> Option<Bytes> {
@@ -2820,6 +2843,20 @@ pub fn get_pair_score_count(env: &Env, asset_pair: &Symbol) -> u64 {
     result.unwrap_or(0)
 }
 
+/// Decrements the running total of successful score submissions for
+/// `asset_pair`. Called by `clear_score` to keep the counter consistent
+/// with the actual number of stored score entries. #225: fixes counter
+/// divergence on score deletion. Saturating subtraction prevents underflow.
+pub fn decrement_pair_score_count(env: &Env, asset_pair: &Symbol) {
+    let key = DataKeyB::PairScoreCount(asset_pair.clone());
+    let current: u64 = env.storage().persistent().get(&key).unwrap_or(0);
+    if current == 0 {
+        return;
+    }
+    env.storage().persistent().set(&key, &(current - 1));
+    env.storage().persistent().extend_ttl(&key, SCORE_TTL_THRESHOLD, SCORE_TTL_EXTEND_TO);
+}
+
 // ── Total unique wallet-pair combinations ever scored ─────────────────────────
 
 /// Increments the global counter of unique `(wallet, asset_pair)`
@@ -2836,6 +2873,17 @@ pub fn increment_total_wallets_scored(env: &Env) {
 /// protocol-health metric.
 pub fn get_total_wallets_scored(env: &Env) -> u64 {
     env.storage().instance().get(&DataKeyB::TotalWalletsScored).unwrap_or(0)
+}
+
+/// Decrements the global unique wallet-pair counter. Called by `clear_score`
+/// when a score entry is permanently removed. #225: fixes counter divergence
+/// on score deletion. Saturating subtraction prevents underflow.
+pub fn decrement_total_wallets_scored(env: &Env) {
+    let current: u64 = env.storage().instance().get(&DataKeyB::TotalWalletsScored).unwrap_or(0);
+    if current == 0 {
+        return;
+    }
+    env.storage().instance().set(&DataKeyB::TotalWalletsScored, &(current - 1));
 }
 
 // ── Score Momentum Window (issue #289) ───────────────────────────────────────
