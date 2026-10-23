@@ -5759,6 +5759,14 @@ impl ScoreGateScoreContract {
             },
         );
         events::signer_removed(&env, &signer);
+        // Governance audit chain — stable discriminant for signer removal (#278)
+        let mut data = [0u8; 32];
+        data[0] = governance_actions::GOV_ACTION_REMOVE_SERVICE_SIGNER;
+        Self::append_governance_action(
+            &env,
+            governance_actions::GOV_ACTION_REMOVE_SERVICE_SIGNER,
+            &data,
+        );
         Ok(())
     }
 
