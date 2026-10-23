@@ -927,6 +927,16 @@ pub fn failover_triggered(env: &Env, wallet: &Address, asset_pair: &Symbol) {
     env.events().publish((symbol_short!("failover"), wallet.clone()), asset_pair.clone());
 }
 
+/// Emitted when the admin configures or clears the failover contract.
+/// `contract_id` is `Some(addr)` on set and `None` on clear. #224: provides
+/// an on-chain audit trail for failover topology changes.
+pub fn failover_contract_set(env: &Env, by: &Address, contract_id: &Option<Address>) {
+    env.events().publish(
+        (symbol_short!("fo_set"), EVENT_VERSION, by.clone()),
+        contract_id.clone(),
+    );
+}
+
 pub fn flash_protection_mode_updated(env: &Env, mode: u32) {
     env.events().publish((symbol_short!("fp_upd"),), mode);
 }

@@ -42,6 +42,9 @@ pub enum Error {
     /// A candidate shard does not advertise every capability
     /// `REQUIRED_SHARD_CAPABILITIES` requires.
     IncompatibleInterface = 7,
+    /// #170: Returned by `accept_admin` / `cancel_admin_transfer` when no
+    /// two-step transfer is currently in flight.
+    NoPendingAdminTransfer = 8,
 }
 
 #[contracttype]
@@ -164,6 +167,82 @@ impl ScoreGateAggregator {
 
     pub fn get_admin(env: Env) -> Result<Address, Error> {
         env.storage().instance().get(&DataKey::Admin).ok_or(Error::NotInitialized)
+    }
+
+    // ── Two-step admin ownership transfer (#170) ──────────────────────────────
+
+    /// Step 1 of admin ownership transfer. The current admin proposes a new
+    /// admin by recording `new_admin` in storage. The new admin must call
+    /// `accept_admin` to complete the transfer. Until then the current admin
+    /// retains all privileges and may cancel the proposal.
+    ///
+    /// Emits `adm_upd` with `(current_admin, proposed_admin)` so indexers can
+    /// track pending transfers.
+    pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        let current: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        current.require_auth();
+        env.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
+        env.events().publish(
+            (symbol_short!("adm_upd"), current.clone()),
+            new_admin.clone(),
+        );
+        Ok(())
+    }
+
+    /// Step 2 of admin ownership transfer. The proposed admin must call this
+    /// to finalise the transfer. Clears `PendingAdmin` and overwrites `Admin`.
+    ///
+    /// Returns `Error::NoPendingAdminTransfer` when no proposal is in flight.
+    /// Emits `adm_upd` with `(previous_admin, new_admin)` to confirm the
+    /// completed handover.
+    pub fn accept_admin(env: Env) -> Result<(), Error> {
+        let new_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(Error::NoPendingAdminTransfer)?;
+        new_admin.require_auth();
+        let previous: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.events().publish(
+            (symbol_short!("adm_upd"), previous),
+            new_admin,
+        );
+        Ok(())
+    }
+
+    /// Cancels a pending admin transfer. Only the current admin may cancel.
+    ///
+    /// Returns `Error::NoPendingAdminTransfer` when no proposal is in flight.
+    pub fn cancel_admin_transfer(env: Env) -> Result<(), Error> {
+        let current: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        current.require_auth();
+        if !env.storage().instance().has(&DataKey::PendingAdmin) {
+            return Err(Error::NoPendingAdminTransfer);
+        }
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        Ok(())
+    }
+
+    /// Returns the proposed pending admin address, if a transfer is in flight.
+    pub fn get_pending_admin(env: Env) -> Result<Option<Address>, Error> {
+        if !env.storage().instance().has(&DataKey::Admin) {
+            return Err(Error::NotInitialized);
+        }
+        Ok(env.storage().instance().get(&DataKey::PendingAdmin))
     }
 
     /// Returns the fixed-point exponential decay lambda as (numerator, denominator).
@@ -1025,11 +1104,13 @@ fn select_canonical_fingerprint(
 #[derive(Clone)]
 pub(crate) enum DataKey {
     Admin,
+    /// Stores the proposed next admin address during a two-step transfer.
+    /// #170: supports propose_admin / accept_admin ownership transfer pattern.
+    PendingAdmin,
     Shards,
     LastShardFailure,
     ShardHealth(Address),
-    /// Capability snapshot recorded at `add_shard` time.
-    /// Stores a `Vec<Symbol>` of the capabilities the shard advertised via
+    /// Capability snapshot recorded at `add_shard` time.\n    /// Stores a `Vec<Symbol>` of the capabilities the shard advertised via
     /// `supports_interface` when it was registered.  Used by
     /// `get_shard_capabilities` and downgrade-detection tests.
     ShardCapabilities(Address),

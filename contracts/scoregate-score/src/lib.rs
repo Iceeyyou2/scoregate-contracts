@@ -158,7 +158,13 @@ mod test_histogram;
 mod test_confidence_gate;
 
 #[cfg(test)]
+mod test_gate_enforcement;
+
+#[cfg(test)]
 mod test_failover;
+
+#[cfg(test)]
+mod test_clear;
 
 #[cfg(test)]
 mod test_slo_defaults;
@@ -5338,6 +5344,12 @@ impl ScoreGateScoreContract {
     /// Admin-only: sets the secondary contract to fall back to via
     /// `query_risk_gate` / `query_risk_gate_with_confidence` while this
     /// contract is paused.
+    ///
+    /// #224: Rejects the call with `Error::SelfReference` when `contract_id`
+    /// equals this contract's own address, preventing a recursive loop where
+    /// paused gate queries would invoke themselves indefinitely. Emits a
+    /// `fo_set` audit event on success so operators can monitor failover
+    /// topology changes.
     pub fn set_failover_contract(
         env: Env,
         admin_signers: Vec<Address>,
@@ -5347,7 +5359,31 @@ impl ScoreGateScoreContract {
             return Err(Error::NotInitialized);
         }
         Self::require_admin_auth(&env, &admin_signers)?;
+        // #224: guard against self-referential failover which would cause
+        // an infinite cross-contract recursion when the contract is paused.
+        if contract_id == env.current_contract_address() {
+            return Err(Error::SelfReference);
+        }
+        let admin = storage::get_admin(&env);
         storage::set_failover_contract(&env, &contract_id);
+        events::failover_contract_set(&env, &admin, &Some(contract_id));
+        Ok(())
+    }
+
+    /// Admin-only: removes the configured failover contract so gate queries
+    /// no longer delegate to any secondary. #224: safe decommissioning
+    /// endpoint. Emits a `fo_set` audit event with `None` on success.
+    pub fn clear_failover_contract(
+        env: Env,
+        admin_signers: Vec<Address>,
+    ) -> Result<(), Error> {
+        if !storage::has_admin(&env) {
+            return Err(Error::NotInitialized);
+        }
+        Self::require_admin_auth(&env, &admin_signers)?;
+        let admin = storage::get_admin(&env);
+        storage::clear_failover_contract(&env);
+        events::failover_contract_set(&env, &admin, &None);
         Ok(())
     }
 
