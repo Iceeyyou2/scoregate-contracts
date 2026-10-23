@@ -141,3 +141,24 @@ fn sha256_chain_step(env: &Env, old_root: &BytesN<32>, action_data: &[u8; 32]) -
     let digest = env.crypto().sha256(&soroban_sdk::Bytes::from_array(env, &buf));
     BytesN::<32>::from_array(env, &digest.to_bytes().to_array())
 }
+
+// ── #278: remove_service_signer appends to the audit chain ────────────────────
+
+#[test]
+fn test_remove_service_signer_appends_to_audit_chain() {
+    let (env, client) = setup();
+
+    // Add a service signer first (this already appends to the chain).
+    let signer = Address::generate(&env);
+    client.add_service_signer(&Vec::new(&env), &signer);
+    let head_after_add = client.get_governance_chain_head();
+
+    // Remove the signer — this must also append to the chain.
+    client.remove_service_signer(&Vec::new(&env), &signer);
+    let head_after_remove = client.get_governance_chain_head();
+
+    assert_ne!(
+        head_after_add, head_after_remove,
+        "audit chain head must advance after remove_service_signer"
+    );
+}
