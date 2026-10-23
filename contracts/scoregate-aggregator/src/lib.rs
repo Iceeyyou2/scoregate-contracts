@@ -12,6 +12,10 @@ mod test_fail_closed;
 #[cfg(test)]
 mod test_shard_mgmt;
 const REQUIRED_SHARD_CAPABILITIES: [&str; 4] = ["score", "gate", "aggr", "arch"];
+
+mod constants;
+use constants::EVENT_VERSION;
+
 use scoregate_score::{AggregateRiskScore, Error as ScoreError, RiskScore};
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, vec, Address, Env, Symbol,
@@ -358,7 +362,7 @@ impl ScoreGateAggregator {
         // Fix #113: emit shard_added so indexers and monitoring can observe
         // topology changes without polling the shard list.
         env.events().publish(
-            (symbol_short!("sh_added"), shard),
+            (symbol_short!("sh_added"), EVENT_VERSION, shard),
             env.ledger().timestamp(),
         );
         Ok(())
@@ -401,7 +405,7 @@ impl ScoreGateAggregator {
         // Fix #113: emit shard_removed so indexers and monitoring can observe
         // topology changes without polling the shard list.
         env.events().publish(
-            (symbol_short!("sh_rmvd"), shard),
+            (symbol_short!("sh_rmvd"), EVENT_VERSION, shard),
             env.ledger().timestamp(),
         );
         Ok(())
@@ -522,7 +526,7 @@ impl ScoreGateAggregator {
                 _ => {
                     // #60: a read query must not write storage.
                     env.events()
-                        .publish((symbol_short!("sh_fail"), shard.clone()), FAILURE_TRANSPORT);
+                        .publish((symbol_short!("sh_fail"), EVENT_VERSION, shard.clone()), FAILURE_TRANSPORT);
                     return false;
                 }
             }
@@ -568,7 +572,7 @@ impl ScoreGateAggregator {
                     // reported as a diagnostic event instead of a `LastShardFailure`
                     // write. Health is set explicitly via `set_shard_health`.
                     env.events()
-                        .publish((symbol_short!("sh_fail"), shard.clone()), FAILURE_TRANSPORT);
+                        .publish((symbol_short!("sh_fail"), EVENT_VERSION, shard.clone()), FAILURE_TRANSPORT);
                     return false;
                 }
             }
@@ -654,14 +658,14 @@ impl ScoreGateAggregator {
                     // reported as a diagnostic event instead of a `LastShardFailure`
                     // write. Health is set explicitly via `set_shard_health`.
                     env.events()
-                        .publish((symbol_short!("sh_fail"), shard.clone()), FAILURE_CONTRACT_ERROR);
+                        .publish((symbol_short!("sh_fail"), EVENT_VERSION, shard.clone()), FAILURE_CONTRACT_ERROR);
                 }
                 Err(_) => {
                     // #60: a read query must not mutate storage, so the failure is
                     // reported as a diagnostic event instead of a `LastShardFailure`
                     // write. Health is set explicitly via `set_shard_health`.
                     env.events()
-                        .publish((symbol_short!("sh_fail"), shard.clone()), FAILURE_TRANSPORT);
+                        .publish((symbol_short!("sh_fail"), EVENT_VERSION, shard.clone()), FAILURE_TRANSPORT);
                 }
             }
         }
@@ -699,14 +703,14 @@ impl ScoreGateAggregator {
                     // reported as a diagnostic event instead of a `LastShardFailure`
                     // write. Health is set explicitly via `set_shard_health`.
                     env.events()
-                        .publish((symbol_short!("sh_fail"), shard.clone()), FAILURE_CONTRACT_ERROR);
+                        .publish((symbol_short!("sh_fail"), EVENT_VERSION, shard.clone()), FAILURE_CONTRACT_ERROR);
                 }
                 Err(_) => {
                     // #60: a read query must not mutate storage, so the failure is
                     // reported as a diagnostic event instead of a `LastShardFailure`
                     // write. Health is set explicitly via `set_shard_health`.
                     env.events()
-                        .publish((symbol_short!("sh_fail"), shard.clone()), FAILURE_TRANSPORT);
+                        .publish((symbol_short!("sh_fail"), EVENT_VERSION, shard.clone()), FAILURE_TRANSPORT);
                 }
             }
         }
@@ -804,14 +808,14 @@ impl ScoreGateAggregator {
                     // reported as a diagnostic event instead of a `LastShardFailure`
                     // write. Health is set explicitly via `set_shard_health`.
                     env.events()
-                        .publish((symbol_short!("sh_fail"), shard.clone()), FAILURE_CONTRACT_ERROR);
+                        .publish((symbol_short!("sh_fail"), EVENT_VERSION, shard.clone()), FAILURE_CONTRACT_ERROR);
                 }
                 Err(_) => {
                     // #60: a read query must not mutate storage, so the failure is
                     // reported as a diagnostic event instead of a `LastShardFailure`
                     // write. Health is set explicitly via `set_shard_health`.
                     env.events()
-                        .publish((symbol_short!("sh_fail"), shard.clone()), FAILURE_TRANSPORT);
+                        .publish((symbol_short!("sh_fail"), EVENT_VERSION, shard.clone()), FAILURE_TRANSPORT);
                 }
             }
         }
@@ -830,7 +834,7 @@ impl ScoreGateAggregator {
             return Err(Error::ShardNotRegistered);
         }
         env.storage().instance().set(&DataKey::ShardHealth(shard.clone()), &healthy);
-        env.events().publish((symbol_short!("sh_health"), shard), healthy);
+        env.events().publish((symbol_short!("sh_health"), EVENT_VERSION, shard), healthy);
         Ok(())
     }
 
