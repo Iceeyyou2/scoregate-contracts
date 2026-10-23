@@ -62,6 +62,9 @@ mod test_ttl_rent_manager;
 mod test_invariants;
 
 #[cfg(test)]
+mod test_lifecycle_invariants;
+
+#[cfg(test)]
 mod test_migration_rollback;
 
 #[cfg(test)]
