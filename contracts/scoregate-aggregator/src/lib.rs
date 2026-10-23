@@ -9,7 +9,13 @@ mod test;
 mod test_conflict_arbitration;
 #[cfg(test)]
 mod test_fail_closed;
+#[cfg(test)]
+mod test_shard_mgmt;
 const REQUIRED_SHARD_CAPABILITIES: [&str; 4] = ["score", "gate", "aggr", "arch"];
+
+mod constants;
+use constants::EVENT_VERSION;
+
 use scoregate_score::{AggregateRiskScore, Error as ScoreError, RiskScore};
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, vec, Address, Env, Symbol,
@@ -40,6 +46,9 @@ pub enum Error {
     /// A candidate shard does not advertise every capability
     /// `REQUIRED_SHARD_CAPABILITIES` requires.
     IncompatibleInterface = 7,
+    /// #170: Returned by `accept_admin` / `cancel_admin_transfer` when no
+    /// two-step transfer is currently in flight.
+    NoPendingAdminTransfer = 8,
 }
 
 #[contracttype]
@@ -164,6 +173,82 @@ impl ScoreGateAggregator {
         env.storage().instance().get(&DataKey::Admin).ok_or(Error::NotInitialized)
     }
 
+    // ── Two-step admin ownership transfer (#170) ──────────────────────────────
+
+    /// Step 1 of admin ownership transfer. The current admin proposes a new
+    /// admin by recording `new_admin` in storage. The new admin must call
+    /// `accept_admin` to complete the transfer. Until then the current admin
+    /// retains all privileges and may cancel the proposal.
+    ///
+    /// Emits `adm_upd` with `(current_admin, proposed_admin)` so indexers can
+    /// track pending transfers.
+    pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        let current: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        current.require_auth();
+        env.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
+        env.events().publish(
+            (symbol_short!("adm_upd"), current.clone()),
+            new_admin.clone(),
+        );
+        Ok(())
+    }
+
+    /// Step 2 of admin ownership transfer. The proposed admin must call this
+    /// to finalise the transfer. Clears `PendingAdmin` and overwrites `Admin`.
+    ///
+    /// Returns `Error::NoPendingAdminTransfer` when no proposal is in flight.
+    /// Emits `adm_upd` with `(previous_admin, new_admin)` to confirm the
+    /// completed handover.
+    pub fn accept_admin(env: Env) -> Result<(), Error> {
+        let new_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(Error::NoPendingAdminTransfer)?;
+        new_admin.require_auth();
+        let previous: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.events().publish(
+            (symbol_short!("adm_upd"), previous),
+            new_admin,
+        );
+        Ok(())
+    }
+
+    /// Cancels a pending admin transfer. Only the current admin may cancel.
+    ///
+    /// Returns `Error::NoPendingAdminTransfer` when no proposal is in flight.
+    pub fn cancel_admin_transfer(env: Env) -> Result<(), Error> {
+        let current: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        current.require_auth();
+        if !env.storage().instance().has(&DataKey::PendingAdmin) {
+            return Err(Error::NoPendingAdminTransfer);
+        }
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        Ok(())
+    }
+
+    /// Returns the proposed pending admin address, if a transfer is in flight.
+    pub fn get_pending_admin(env: Env) -> Result<Option<Address>, Error> {
+        if !env.storage().instance().has(&DataKey::Admin) {
+            return Err(Error::NotInitialized);
+        }
+        Ok(env.storage().instance().get(&DataKey::PendingAdmin))
+    }
+
     /// Returns the fixed-point exponential decay lambda as (numerator, denominator).
     ///
     /// Aggregation policy: singleton configuration is read from the primary
@@ -277,7 +362,7 @@ impl ScoreGateAggregator {
         // Fix #113: emit shard_added so indexers and monitoring can observe
         // topology changes without polling the shard list.
         env.events().publish(
-            (symbol_short!("sh_added"), shard),
+            (symbol_short!("sh_added"), EVENT_VERSION, shard),
             env.ledger().timestamp(),
         );
         Ok(())
@@ -305,10 +390,22 @@ impl ScoreGateAggregator {
         env.storage().instance().set(&DataKey::Shards, &out);
         env.storage().instance().remove(&DataKey::ShardHealth(shard.clone()));
         env.storage().instance().remove(&DataKey::ShardCapabilities(shard.clone()));
+
+        // Clear LastShardFailure if it references the shard being removed.
+        // This prevents residual failure records for decommissioned shards
+        // from confusing monitoring indexers (fix #238).
+        if let Some((failed_shard, _failure_code)) =
+            env.storage().instance().get(&DataKey::LastShardFailure)
+        {
+            if failed_shard == shard {
+                env.storage().instance().remove(&DataKey::LastShardFailure);
+            }
+        }
+
         // Fix #113: emit shard_removed so indexers and monitoring can observe
         // topology changes without polling the shard list.
         env.events().publish(
-            (symbol_short!("sh_rmvd"), shard),
+            (symbol_short!("sh_rmvd"), EVENT_VERSION, shard),
             env.ledger().timestamp(),
         );
         Ok(())
@@ -326,6 +423,44 @@ impl ScoreGateAggregator {
             .instance()
             .get(&DataKey::ShardCapabilities(shard))
             .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    /// Re-probes an already-registered shard's interface capabilities and
+    /// updates the stored `ShardCapabilities` snapshot to reflect its current
+    /// state. Useful after an in-place shard upgrade that adds new capabilities
+    /// (e.g. `federated`, `sbrain`, `batch_attested`) without changing the
+    /// shard's contract address.
+    ///
+    /// Requires admin authentication. Returns `ShardNotRegistered` if `shard`
+    /// is not in the active shard list. Emits `sh_caps_refreshed` on success.
+    pub fn refresh_shard_capabilities(env: Env, shard: Address) -> Result<(), Error> {
+        let admin: Address =
+            env.storage().instance().get(&DataKey::Admin).ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+
+        // Verify the shard is currently registered.
+        let shards: Vec<Address> =
+            env.storage().instance().get(&DataKey::Shards).unwrap_or_else(|| Vec::new(&env));
+        let mut found = false;
+        for i in 0..shards.len() {
+            if shards.get(i).unwrap() == shard {
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            return Err(Error::ShardNotRegistered);
+        }
+
+        // Re-probe and persist the updated capability snapshot.
+        let snapshot = probe_capabilities(&env, &shard);
+        env.storage().instance().set(&DataKey::ShardCapabilities(shard.clone()), &snapshot);
+
+        env.events().publish(
+            (symbol_short!("sh_caps_refreshed"), shard),
+            env.ledger().timestamp(),
+        );
+        Ok(())
     }
 
     /// Returns `true` if `shard` no longer advertises all the capabilities it
@@ -391,7 +526,7 @@ impl ScoreGateAggregator {
                 _ => {
                     // #60: a read query must not write storage.
                     env.events()
-                        .publish((symbol_short!("sh_fail"), shard.clone()), FAILURE_TRANSPORT);
+                        .publish((symbol_short!("sh_fail"), EVENT_VERSION, shard.clone()), FAILURE_TRANSPORT);
                     return false;
                 }
             }
@@ -437,12 +572,52 @@ impl ScoreGateAggregator {
                     // reported as a diagnostic event instead of a `LastShardFailure`
                     // write. Health is set explicitly via `set_shard_health`.
                     env.events()
-                        .publish((symbol_short!("sh_fail"), shard.clone()), FAILURE_TRANSPORT);
+                        .publish((symbol_short!("sh_fail"), EVENT_VERSION, shard.clone()), FAILURE_TRANSPORT);
                     return false;
                 }
             }
         }
         true
+    }
+
+    /// Infallible relative (percentile-based) risk gate across all registered
+    /// healthy shards. Every shard must accept the wallet's percentile ranking
+    /// relative to `percentile_threshold`; transport and contract failures fail
+    /// the query closed.
+    pub fn query_risk_gate_relative(
+        env: Env,
+        wallet: Address,
+        asset_pair: Symbol,
+        percentile_threshold: u32,
+    ) -> bool {
+        if !asset_pair_is_bounded(&env, &asset_pair) {
+            return false;
+        }
+        let shards: Vec<Address> =
+            env.storage().instance().get(&DataKey::Shards).unwrap_or_else(|| Vec::new(&env));
+        if shards.is_empty() {
+            return false;
+        }
+        let mut consulted = 0u32;
+        for i in 0..shards.len() {
+            let shard = shards.get(i).unwrap();
+            if !is_shard_healthy(&env, &shard) {
+                continue;
+            }
+            let client = scoregate_score::ScoreGateScoreContractClient::new(&env, &shard);
+            match client.try_query_risk_gate_relative(&wallet, &asset_pair, &percentile_threshold) {
+                Ok(Ok(true)) => consulted += 1,
+                Ok(Ok(false)) => return false,
+                _ => {
+                    // #60: a read query must not write storage.
+                    env.events()
+                        .publish((symbol_short!("sh_fail"), shard.clone()), FAILURE_TRANSPORT);
+                    return false;
+                }
+            }
+        }
+        // Fail closed: no shard was able to vouch for this wallet.
+        consulted > 0
     }
 
     pub fn get_score(
@@ -470,7 +645,10 @@ impl ScoreGateAggregator {
                 Ok(Ok(score)) => match &best {
                     None => best = Some(score),
                     Some(b) => {
-                        if score.score > b.score {
+                        if score.timestamp > b.timestamp {
+                            best = Some(score);
+                        } else if score.timestamp == b.timestamp && score.score > b.score {
+                            // Tie-break: same timestamp, prefer higher score (conservative)
                             best = Some(score);
                         }
                     }
@@ -480,14 +658,14 @@ impl ScoreGateAggregator {
                     // reported as a diagnostic event instead of a `LastShardFailure`
                     // write. Health is set explicitly via `set_shard_health`.
                     env.events()
-                        .publish((symbol_short!("sh_fail"), shard.clone()), FAILURE_CONTRACT_ERROR);
+                        .publish((symbol_short!("sh_fail"), EVENT_VERSION, shard.clone()), FAILURE_CONTRACT_ERROR);
                 }
                 Err(_) => {
                     // #60: a read query must not mutate storage, so the failure is
                     // reported as a diagnostic event instead of a `LastShardFailure`
                     // write. Health is set explicitly via `set_shard_health`.
                     env.events()
-                        .publish((symbol_short!("sh_fail"), shard.clone()), FAILURE_TRANSPORT);
+                        .publish((symbol_short!("sh_fail"), EVENT_VERSION, shard.clone()), FAILURE_TRANSPORT);
                 }
             }
         }
@@ -525,14 +703,14 @@ impl ScoreGateAggregator {
                     // reported as a diagnostic event instead of a `LastShardFailure`
                     // write. Health is set explicitly via `set_shard_health`.
                     env.events()
-                        .publish((symbol_short!("sh_fail"), shard.clone()), FAILURE_CONTRACT_ERROR);
+                        .publish((symbol_short!("sh_fail"), EVENT_VERSION, shard.clone()), FAILURE_CONTRACT_ERROR);
                 }
                 Err(_) => {
                     // #60: a read query must not mutate storage, so the failure is
                     // reported as a diagnostic event instead of a `LastShardFailure`
                     // write. Health is set explicitly via `set_shard_health`.
                     env.events()
-                        .publish((symbol_short!("sh_fail"), shard.clone()), FAILURE_TRANSPORT);
+                        .publish((symbol_short!("sh_fail"), EVENT_VERSION, shard.clone()), FAILURE_TRANSPORT);
                 }
             }
         }
@@ -548,6 +726,8 @@ impl ScoreGateAggregator {
             symbol_short!("federated"),
             symbol_short!("sbrain"),
             symbol_short!("health"),
+            symbol_short!("cgate"),
+            symbol_short!("rgate"),
         ];
         for i in 0..caps.len() {
             if caps.get(i).unwrap() == capability {
@@ -628,14 +808,14 @@ impl ScoreGateAggregator {
                     // reported as a diagnostic event instead of a `LastShardFailure`
                     // write. Health is set explicitly via `set_shard_health`.
                     env.events()
-                        .publish((symbol_short!("sh_fail"), shard.clone()), FAILURE_CONTRACT_ERROR);
+                        .publish((symbol_short!("sh_fail"), EVENT_VERSION, shard.clone()), FAILURE_CONTRACT_ERROR);
                 }
                 Err(_) => {
                     // #60: a read query must not mutate storage, so the failure is
                     // reported as a diagnostic event instead of a `LastShardFailure`
                     // write. Health is set explicitly via `set_shard_health`.
                     env.events()
-                        .publish((symbol_short!("sh_fail"), shard.clone()), FAILURE_TRANSPORT);
+                        .publish((symbol_short!("sh_fail"), EVENT_VERSION, shard.clone()), FAILURE_TRANSPORT);
                 }
             }
         }
@@ -654,7 +834,7 @@ impl ScoreGateAggregator {
             return Err(Error::ShardNotRegistered);
         }
         env.storage().instance().set(&DataKey::ShardHealth(shard.clone()), &healthy);
-        env.events().publish((symbol_short!("sh_health"), shard), healthy);
+        env.events().publish((symbol_short!("sh_health"), EVENT_VERSION, shard), healthy);
         Ok(())
     }
 
@@ -712,7 +892,7 @@ impl ScoreGateAggregator {
                         continue;
                     }
                 },
-                Err(Ok(ScoreError::ScoreNotFound)) => {}
+                Ok(Err(ScoreError::ScoreNotFound)) => {}
                 Ok(Err(_)) => {
                     unavailable_count += 1;
                     diagnostics.push_back(ShardConfigDiagnostic {
@@ -926,13 +1106,15 @@ fn select_canonical_fingerprint(
 
 #[contracttype]
 #[derive(Clone)]
-enum DataKey {
+pub(crate) enum DataKey {
     Admin,
+    /// Stores the proposed next admin address during a two-step transfer.
+    /// #170: supports propose_admin / accept_admin ownership transfer pattern.
+    PendingAdmin,
     Shards,
     LastShardFailure,
     ShardHealth(Address),
-    /// Capability snapshot recorded at `add_shard` time.
-    /// Stores a `Vec<Symbol>` of the capabilities the shard advertised via
+    /// Capability snapshot recorded at `add_shard` time.\n    /// Stores a `Vec<Symbol>` of the capabilities the shard advertised via
     /// `supports_interface` when it was registered.  Used by
     /// `get_shard_capabilities` and downgrade-detection tests.
     ShardCapabilities(Address),

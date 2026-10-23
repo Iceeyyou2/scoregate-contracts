@@ -440,3 +440,58 @@ fn test_second_pending_submission_replaces_first() {
         "only the committed entry counts — the replaced pending write never went live"
     );
 }
+
+
+// ── Guards: pause / pair-pause / epoch ─────────────────────────────────────────
+
+#[test]
+fn test_commit_pending_score_blocked_by_global_pause() {
+    let (env, client, _admin, _service) = setup();
+    client.set_finality_buffer(&Vec::new(&env), &60);
+    let wallet = Address::generate(&env);
+    let pair = symbol_short!("XLM_USDC");
+    submit(&env, &client, &wallet, &pair, 50);
+    advance_to(&env, START_TS + 60);
+    client.pause(&Vec::new(&env));
+    let result = client.try_commit_pending_score(&wallet, &pair);
+    assert_eq!(result, Err(Ok(Error::ContractPaused)));
+}
+
+#[test]
+fn test_commit_pending_score_blocked_by_pair_pause() {
+    let (env, client, _admin, _service) = setup();
+    client.set_finality_buffer(&Vec::new(&env), &60);
+    let wallet = Address::generate(&env);
+    let pair = symbol_short!("XLM_USDC");
+    submit(&env, &client, &wallet, &pair, 50);
+    advance_to(&env, START_TS + 60);
+    client.set_pair_paused(&Vec::new(&env), &pair, &true);
+    let result = client.try_commit_pending_score(&wallet, &pair);
+    assert_eq!(result, Err(Ok(Error::ContractPaused)));
+}
+
+#[test]
+fn test_commit_pending_score_blocked_by_closed_epoch() {
+    let (env, client, _admin, _service) = setup();
+    client.set_finality_buffer(&Vec::new(&env), &60);
+    let wallet = Address::generate(&env);
+    let pair = symbol_short!("XLM_USDC");
+    submit(&env, &client, &wallet, &pair, 50);
+    advance_to(&env, START_TS + 60);
+    client.close_epoch(&Vec::new(&env));
+    let result = client.try_commit_pending_score(&wallet, &pair);
+    assert_eq!(result, Err(Ok(Error::EpochClosed)));
+}
+
+#[test]
+fn test_auto_commit_score_blocked_by_global_pause() {
+    let (env, client, _admin, _service) = setup();
+    client.set_finality_buffer(&Vec::new(&env), &60);
+    let wallet = Address::generate(&env);
+    let pair = symbol_short!("XLM_USDC");
+    submit(&env, &client, &wallet, &pair, 55);
+    advance_to(&env, START_TS + 60);
+    client.pause(&Vec::new(&env));
+    let result = client.try_auto_commit_score(&wallet, &pair);
+    assert_eq!(result, Err(Ok(Error::ContractPaused)));
+}

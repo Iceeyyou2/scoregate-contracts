@@ -75,6 +75,9 @@ impl Error {
     pub const CounterpartyLinkFull: Error = Error::ServiceSetFull;
     pub const CounterpartyNotFound: Error = Error::ScoreNotFound;
     pub const SelfLink: Error = Error::InvalidScore;
+    /// Returned when a contract address is configured as its own failover
+    /// target, which would cause recursive cross-contract calls. #224.
+    pub const SelfReference: Error = Error::InvalidScore;
     pub const ScoreVelocityExceeded: Error = Error::RateLimitExceeded;
     pub const InvalidEscalation: Error = Error::InvalidThreshold;
     pub const InvalidJump: Error = Error::InvalidScore;

@@ -158,7 +158,13 @@ mod test_histogram;
 mod test_confidence_gate;
 
 #[cfg(test)]
+mod test_gate_enforcement;
+
+#[cfg(test)]
 mod test_failover;
+
+#[cfg(test)]
+mod test_clear;
 
 #[cfg(test)]
 mod test_slo_defaults;
@@ -886,6 +892,17 @@ impl ScoreGateScoreContract {
         asset_pair: Symbol,
     ) -> Result<(), Error> {
         Self::require_not_frozen(&env)?;
+
+        if storage::is_paused(&env) {
+            return Err(Error::ContractPaused);
+        }
+        if storage::is_pair_paused(&env, &asset_pair) {
+            return Err(Error::ContractPaused);
+        }
+        if !storage::is_epoch_open(&env) {
+            return Err(Error::EpochClosed);
+        }
+
         let pending =
             storage::get_pending_score(&env, &wallet, &asset_pair).ok_or(Error::NoPendingScore)?;
 
@@ -5389,6 +5406,12 @@ impl ScoreGateScoreContract {
     /// Admin-only: sets the secondary contract to fall back to via
     /// `query_risk_gate` / `query_risk_gate_with_confidence` while this
     /// contract is paused.
+    ///
+    /// #224: Rejects the call with `Error::SelfReference` when `contract_id`
+    /// equals this contract's own address, preventing a recursive loop where
+    /// paused gate queries would invoke themselves indefinitely. Emits a
+    /// `fo_set` audit event on success so operators can monitor failover
+    /// topology changes.
     pub fn set_failover_contract(
         env: Env,
         admin_signers: Vec<Address>,
@@ -5398,7 +5421,31 @@ impl ScoreGateScoreContract {
             return Err(Error::NotInitialized);
         }
         Self::require_admin_auth(&env, &admin_signers)?;
+        // #224: guard against self-referential failover which would cause
+        // an infinite cross-contract recursion when the contract is paused.
+        if contract_id == env.current_contract_address() {
+            return Err(Error::SelfReference);
+        }
+        let admin = storage::get_admin(&env);
         storage::set_failover_contract(&env, &contract_id);
+        events::failover_contract_set(&env, &admin, &Some(contract_id));
+        Ok(())
+    }
+
+    /// Admin-only: removes the configured failover contract so gate queries
+    /// no longer delegate to any secondary. #224: safe decommissioning
+    /// endpoint. Emits a `fo_set` audit event with `None` on success.
+    pub fn clear_failover_contract(
+        env: Env,
+        admin_signers: Vec<Address>,
+    ) -> Result<(), Error> {
+        if !storage::has_admin(&env) {
+            return Err(Error::NotInitialized);
+        }
+        Self::require_admin_auth(&env, &admin_signers)?;
+        let admin = storage::get_admin(&env);
+        storage::clear_failover_contract(&env);
+        events::failover_contract_set(&env, &admin, &None);
         Ok(())
     }
 
@@ -5810,6 +5857,14 @@ impl ScoreGateScoreContract {
             },
         );
         events::signer_removed(&env, &signer);
+        // Governance audit chain — stable discriminant for signer removal (#278)
+        let mut data = [0u8; 32];
+        data[0] = governance_actions::GOV_ACTION_REMOVE_SERVICE_SIGNER;
+        Self::append_governance_action(
+            &env,
+            governance_actions::GOV_ACTION_REMOVE_SERVICE_SIGNER,
+            &data,
+        );
         Ok(())
     }
 

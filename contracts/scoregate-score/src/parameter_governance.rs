@@ -175,8 +175,12 @@ pub fn get_current_parameter_value(env: &Env, param_key: &Symbol) -> Result<Byte
     if param_key == &param_key_decay_rate() {
         let (num, denom) = storage::get_decay_rate(env);
         let mut bytes = [0u8; 8];
-        bytes[0..4].copy_from_slice(&num.to_be_bytes());
-        bytes[4..8].copy_from_slice(&denom.to_be_bytes());
+        // get_decay_rate returns (u64, u64) but the encoding uses 4 bytes per
+        // component (matching validate_parameter_value / apply_parameter_change
+        // which read two 32-bit big-endian integers). Cast to u32 before
+        // calling to_be_bytes() so the slice lengths align.
+        bytes[0..4].copy_from_slice(&(num as u32).to_be_bytes());
+        bytes[4..8].copy_from_slice(&(denom as u32).to_be_bytes());
         return Ok(Bytes::from_array(env, &bytes));
     }
     if param_key == &param_key_velocity_cap() {
