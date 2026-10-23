@@ -1682,13 +1682,15 @@ pub fn add_counterparty_link(
     asset_pair: &Symbol,
 ) -> Result<(), Error> {
     if wallet_a == wallet_b {
-        return Err(Error::CounterpartyLinkFull);
+        // SelfLink is an alias for Error::InvalidScore (discriminant 4)
+        return Err(Error::InvalidScore); // Error::SelfLink
     }
 
     let mut links_a = get_counterparties(env, wallet_a, asset_pair);
     if !links_a.contains(wallet_b) {
         if links_a.len() >= crate::constants::MAX_COUNTERPARTY_LINKS_PER_WALLET {
-            return Err(Error::ServiceSetFull);
+            // CounterpartyLinkFull is an alias for Error::ServiceSetFull (discriminant 17)
+            return Err(Error::ServiceSetFull); // Error::CounterpartyLinkFull
         }
         links_a.push_back(wallet_b.clone());
         let key_a = DataKey::Counterparties(wallet_a.clone(), asset_pair.clone());
@@ -1699,7 +1701,8 @@ pub fn add_counterparty_link(
     let mut links_b = get_counterparties(env, wallet_b, asset_pair);
     if !links_b.contains(wallet_a) {
         if links_b.len() >= crate::constants::MAX_COUNTERPARTY_LINKS_PER_WALLET {
-            return Err(Error::ServiceSetFull);
+            // CounterpartyLinkFull is an alias for Error::ServiceSetFull (discriminant 17)
+            return Err(Error::ServiceSetFull); // Error::CounterpartyLinkFull
         }
         links_b.push_back(wallet_a.clone());
         let key_b = DataKey::Counterparties(wallet_b.clone(), asset_pair.clone());
@@ -1743,7 +1746,8 @@ pub fn remove_counterparty_link(
     }
 
     if pos_a.is_none() && pos_b.is_none() {
-        return Err(Error::CounterpartyLinkFull);
+        // CounterpartyNotFound is an alias for Error::ScoreNotFound (discriminant 6)
+        return Err(Error::ScoreNotFound); // Error::CounterpartyNotFound
     }
 
     Ok(())
