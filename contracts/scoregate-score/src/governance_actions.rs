@@ -44,6 +44,8 @@
 //! | `0x04` | `pause` | `pause` |
 //! | `0x05` | `unpause` | `unpause` |
 //! | `0x06` | `upg_prop` | `propose_upgrade` |
+| `0x07` | `upg_veto` | `veto_upgrade` |
+| `0x08` | `rm_sig` | `remove_service_signer` |
 
 // ── Discriminants ─────────────────────────────────────────────────────────────
 //
@@ -96,6 +98,13 @@ pub const GOV_ACTION_PROPOSE_UPGRADE: u8 = 0x06;
 /// eto_upgrade - veto a pending upgrade proposal.
 pub const GOV_ACTION_VETO_UPGRADE: u8 = 0x07;
 
+/// `remove_service_signer` — remove an address from the M-of-N service signer set.
+///
+/// The signer is de-registered from the active set and marked `Revoked`.  Every
+/// removal is irreversibly stamped into the audit chain so the signer roster
+/// can be reconstructed offline.
+pub const GOV_ACTION_REMOVE_SERVICE_SIGNER: u8 = 0x08;
+
 // ── Human-readable name strings ───────────────────────────────────────────────
 //
 // Each name is ≤ 9 ASCII characters so it can be used directly with
@@ -117,7 +126,13 @@ pub const GOV_ACTION_NAME_PAUSE: &str = "pause";
 pub const GOV_ACTION_NAME_UNPAUSE: &str = "unpause";
 
 /// Human-readable name for [`GOV_ACTION_PROPOSE_UPGRADE`].
-pub const GOV_ACTION_NAME_PROPOSE_UPGRADE: &str = "upg_prop";`n`n/// Human-readable name for [`GOV_ACTION_VETO_UPGRADE`].`npub const GOV_ACTION_NAME_VETO_UPGRADE: &str = "upg_veto";
+pub const GOV_ACTION_NAME_PROPOSE_UPGRADE: &str = "upg_prop";
+
+/// Human-readable name for [`GOV_ACTION_VETO_UPGRADE`].
+pub const GOV_ACTION_NAME_VETO_UPGRADE: &str = "upg_veto";
+
+/// Human-readable name for [`GOV_ACTION_REMOVE_SERVICE_SIGNER`].
+pub const GOV_ACTION_NAME_REMOVE_SERVICE_SIGNER: &str = "rm_sig";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -140,6 +155,7 @@ pub fn action_name(discriminant: u8) -> &'static str {
         GOV_ACTION_UNPAUSE => GOV_ACTION_NAME_UNPAUSE,
         GOV_ACTION_PROPOSE_UPGRADE => GOV_ACTION_NAME_PROPOSE_UPGRADE,
         GOV_ACTION_VETO_UPGRADE => GOV_ACTION_NAME_VETO_UPGRADE,
+        GOV_ACTION_REMOVE_SERVICE_SIGNER => GOV_ACTION_NAME_REMOVE_SERVICE_SIGNER,
         _ => "unknown",
     }
 }
@@ -166,6 +182,7 @@ pub fn all_actions() -> &'static [(u8, &'static str)] {
         (GOV_ACTION_UNPAUSE, GOV_ACTION_NAME_UNPAUSE),
         (GOV_ACTION_PROPOSE_UPGRADE, GOV_ACTION_NAME_PROPOSE_UPGRADE),
         (GOV_ACTION_VETO_UPGRADE, GOV_ACTION_NAME_VETO_UPGRADE),
+        (GOV_ACTION_REMOVE_SERVICE_SIGNER, GOV_ACTION_NAME_REMOVE_SERVICE_SIGNER),
     ]
 }
 

@@ -564,4 +564,16 @@ mod tests {
         assert!(!tx.accepted);
         assert_eq!(tx.rejection_code, Some(Error::ContractPaused as u32));
     }
+
+    // #275: Verify that SnapshotEntry can be deserialized from the format
+    // produced by fetch_testnet_snapshot.py's --format replay mode.
+    #[test]
+    fn snapshot_entry_deserializes_from_rpc_export_format() {
+        let json = r#"{"wallet":"GA5ZSEJ7B7","asset_pair":"XLM_USDC","trades":null}"#;
+        let entry: SnapshotEntry =
+            serde_json::from_str(json).expect("must parse replay-format entry");
+        assert_eq!(entry.wallet, "GA5ZSEJ7B7");
+        assert_eq!(entry.asset_pair, "XLM_USDC");
+        assert!(entry.trades.is_none());
+    }
 }

@@ -191,16 +191,15 @@ fn ts_type(type_: &ScSpecTypeDef) -> String {
         ScSpecTypeDef::Bool => "boolean".to_string(),
         ScSpecTypeDef::Void => "void".to_string(),
         ScSpecTypeDef::Error => "number".to_string(),
-        ScSpecTypeDef::U32
-        | ScSpecTypeDef::I32
-        | ScSpecTypeDef::U64
+        ScSpecTypeDef::U32 | ScSpecTypeDef::I32 => "number".to_string(),
+        ScSpecTypeDef::U64
         | ScSpecTypeDef::I64
         | ScSpecTypeDef::U128
         | ScSpecTypeDef::I128
         | ScSpecTypeDef::U256
         | ScSpecTypeDef::I256
         | ScSpecTypeDef::Timepoint
-        | ScSpecTypeDef::Duration => "number".to_string(),
+        | ScSpecTypeDef::Duration => "bigint".to_string(),
         ScSpecTypeDef::Bytes
         | ScSpecTypeDef::BytesN(_)
         | ScSpecTypeDef::String

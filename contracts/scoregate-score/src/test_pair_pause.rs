@@ -3,7 +3,7 @@
 
 use soroban_sdk::{
     symbol_short,
-    testutils::{Address as _, Events as _},
+    testutils::{Address as _, Events as _, Ledger as _},
     Address, Env, IntoVal, Symbol, TryFromVal, Vec,
 };
 
@@ -359,4 +359,18 @@ fn test_pair_paused_event_emitted() {
         )
     );
     assert!(!bool::try_from_val(&env, &data).unwrap());
+}
+
+
+#[test]
+fn test_pair_pause_blocks_commit_pending_score() {
+    let (env, client, _admin) = setup();
+    let wallet = Address::generate(&env);
+    let pair = symbol_short!("XLM_USDC");
+    client.set_finality_buffer(&Vec::new(&env), &60);
+    client.submit_score(&Vec::new(&env), &wallet, &pair, &50, &false, &false, &START_TS, &90, &1, &None);
+    env.ledger().with_mut(|l| l.timestamp = START_TS + 60);
+    client.set_pair_paused(&Vec::new(&env), &pair, &true);
+    let result = client.try_commit_pending_score(&wallet, &pair);
+    assert_eq!(result, Err(Ok(Error::ContractPaused)));
 }
