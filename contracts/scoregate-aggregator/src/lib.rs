@@ -9,6 +9,8 @@ mod test;
 mod test_conflict_arbitration;
 #[cfg(test)]
 mod test_fail_closed;
+#[cfg(test)]
+mod test_shard_mgmt;
 const REQUIRED_SHARD_CAPABILITIES: [&str; 4] = ["score", "gate", "aggr", "arch"];
 use scoregate_score::{AggregateRiskScore, Error as ScoreError, RiskScore};
 use soroban_sdk::{
@@ -305,6 +307,18 @@ impl ScoreGateAggregator {
         env.storage().instance().set(&DataKey::Shards, &out);
         env.storage().instance().remove(&DataKey::ShardHealth(shard.clone()));
         env.storage().instance().remove(&DataKey::ShardCapabilities(shard.clone()));
+
+        // Clear LastShardFailure if it references the shard being removed.
+        // This prevents residual failure records for decommissioned shards
+        // from confusing monitoring indexers (fix #238).
+        if let Some((failed_shard, _failure_code)) =
+            env.storage().instance().get(&DataKey::LastShardFailure)
+        {
+            if failed_shard == shard {
+                env.storage().instance().remove(&DataKey::LastShardFailure);
+            }
+        }
+
         // Fix #113: emit shard_removed so indexers and monitoring can observe
         // topology changes without polling the shard list.
         env.events().publish(
@@ -964,7 +978,7 @@ fn select_canonical_fingerprint(
 
 #[contracttype]
 #[derive(Clone)]
-enum DataKey {
+pub(crate) enum DataKey {
     Admin,
     Shards,
     LastShardFailure,
