@@ -497,6 +497,46 @@ impl ScoreGateAggregator {
         true
     }
 
+    /// Infallible relative (percentile-based) risk gate across all registered
+    /// healthy shards. Every shard must accept the wallet's percentile ranking
+    /// relative to `percentile_threshold`; transport and contract failures fail
+    /// the query closed.
+    pub fn query_risk_gate_relative(
+        env: Env,
+        wallet: Address,
+        asset_pair: Symbol,
+        percentile_threshold: u32,
+    ) -> bool {
+        if !asset_pair_is_bounded(&env, &asset_pair) {
+            return false;
+        }
+        let shards: Vec<Address> =
+            env.storage().instance().get(&DataKey::Shards).unwrap_or_else(|| Vec::new(&env));
+        if shards.is_empty() {
+            return false;
+        }
+        let mut consulted = 0u32;
+        for i in 0..shards.len() {
+            let shard = shards.get(i).unwrap();
+            if !is_shard_healthy(&env, &shard) {
+                continue;
+            }
+            let client = scoregate_score::ScoreGateScoreContractClient::new(&env, &shard);
+            match client.try_query_risk_gate_relative(&wallet, &asset_pair, &percentile_threshold) {
+                Ok(Ok(true)) => consulted += 1,
+                Ok(Ok(false)) => return false,
+                _ => {
+                    // #60: a read query must not write storage.
+                    env.events()
+                        .publish((symbol_short!("sh_fail"), shard.clone()), FAILURE_TRANSPORT);
+                    return false;
+                }
+            }
+        }
+        // Fail closed: no shard was able to vouch for this wallet.
+        consulted > 0
+    }
+
     pub fn get_score(
         env: Env,
         wallet: Address,
@@ -522,7 +562,10 @@ impl ScoreGateAggregator {
                 Ok(Ok(score)) => match &best {
                     None => best = Some(score),
                     Some(b) => {
-                        if score.score > b.score {
+                        if score.timestamp > b.timestamp {
+                            best = Some(score);
+                        } else if score.timestamp == b.timestamp && score.score > b.score {
+                            // Tie-break: same timestamp, prefer higher score (conservative)
                             best = Some(score);
                         }
                     }
@@ -600,6 +643,8 @@ impl ScoreGateAggregator {
             symbol_short!("federated"),
             symbol_short!("sbrain"),
             symbol_short!("health"),
+            symbol_short!("cgate"),
+            symbol_short!("rgate"),
         ];
         for i in 0..caps.len() {
             if caps.get(i).unwrap() == capability {
@@ -764,7 +809,7 @@ impl ScoreGateAggregator {
                         continue;
                     }
                 },
-                Err(Ok(ScoreError::ScoreNotFound)) => {}
+                Ok(Err(ScoreError::ScoreNotFound)) => {}
                 Ok(Err(_)) => {
                     unavailable_count += 1;
                     diagnostics.push_back(ShardConfigDiagnostic {
